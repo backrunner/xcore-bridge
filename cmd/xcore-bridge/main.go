@@ -268,7 +268,7 @@ func readLinksFile(path string) ([]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if !strings.HasPrefix(line, "vless://") {
+		if !strings.HasPrefix(strings.ToLower(line), "vless://") {
 			return nil, fmt.Errorf("%s:%s is not a VLESS share link", path, strconv.Itoa(lineNo+1))
 		}
 		links = append(links, line)

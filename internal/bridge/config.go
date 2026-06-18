@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/orchiliao/xcore-bridge/internal/vless"
@@ -29,6 +30,10 @@ func JSONConfig(cfg Config) ([]byte, error) {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "warning"
 	}
+	outboundSettings, err := vlessSettings(cfg.Node)
+	if err != nil {
+		return nil, err
+	}
 	doc := map[string]any{
 		"log": map[string]any{
 			"loglevel": cfg.LogLevel,
@@ -50,7 +55,7 @@ func JSONConfig(cfg Config) ([]byte, error) {
 			map[string]any{
 				"tag":            "vless-out",
 				"protocol":       "vless",
-				"settings":       vlessSettings(cfg.Node),
+				"settings":       outboundSettings,
 				"streamSettings": streamSettings(cfg.Node),
 			},
 		},
@@ -75,7 +80,7 @@ func JSONConfig(cfg Config) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
-func vlessSettings(node vless.Node) map[string]any {
+func vlessSettings(node vless.Node) (map[string]any, error) {
 	user := map[string]any{
 		"id":         node.ID,
 		"encryption": valueOrDefault(node.Param("encryption"), "none"),
@@ -84,7 +89,11 @@ func vlessSettings(node vless.Node) map[string]any {
 		user["flow"] = flow
 	}
 	if level := node.Param("level"); level != "" {
-		user["level"] = level
+		parsedLevel, err := strconv.ParseUint(level, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid VLESS user level %q", level)
+		}
+		user["level"] = uint32(parsedLevel)
 	}
 	return map[string]any{
 		"vnext": []any{
@@ -94,7 +103,7 @@ func vlessSettings(node vless.Node) map[string]any {
 				"users":   []any{user},
 			},
 		},
-	}
+	}, nil
 }
 
 func streamSettings(node vless.Node) map[string]any {
@@ -122,7 +131,7 @@ func streamSettings(node vless.Node) map[string]any {
 	case "ws":
 		settings["wsSettings"] = hostPathSettings(node)
 	case "httpupgrade":
-		settings["httpupgradeSettings"] = hostPathSettings(node)
+		settings["httpupgradeSettings"] = httpUpgradeSettings(node)
 	case "splithttp":
 		settings["splithttpSettings"] = splitHTTPSettings(node)
 	case "grpc":
@@ -162,6 +171,13 @@ func hostPathSettings(node vless.Node) map[string]any {
 	return out
 }
 
+func httpUpgradeSettings(node vless.Node) map[string]any {
+	out := map[string]any{}
+	copyParam(out, "host", node, "host")
+	copyParam(out, "path", node, "path")
+	return out
+}
+
 func splitHTTPSettings(node vless.Node) map[string]any {
 	out := hostPathSettings(node)
 	copyParam(out, "mode", node, "mode")
@@ -172,7 +188,7 @@ func grpcSettings(node vless.Node) map[string]any {
 	out := map[string]any{}
 	copyParam(out, "authority", node, "authority", "host")
 	copyParam(out, "serviceName", node, "serviceName", "service")
-	if mode := strings.ToLower(node.Param("mode")); mode == "multi" || mode == "multiMode" {
+	if mode := strings.ToLower(node.Param("mode")); mode == "multi" || mode == "multimode" {
 		out["multiMode"] = true
 	}
 	return out

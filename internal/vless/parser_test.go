@@ -33,6 +33,16 @@ func TestParseRejectsInvalidUUID(t *testing.T) {
 	}
 }
 
+func TestParseAllowsCompactUUID(t *testing.T) {
+	node, err := Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none#Example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.ID != "00000000000000000000000000000000" {
+		t.Fatalf("unexpected id %q", node.ID)
+	}
+}
+
 func TestValidateRejectsInvalidRealityPublicKey(t *testing.T) {
 	node, err := Parse("vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&security=reality&sni=www.example.com&fp=chrome&pbk=abc&sid=0123&type=tcp#Example")
 	if err != nil {
