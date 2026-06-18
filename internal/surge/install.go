@@ -54,7 +54,7 @@ func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
 	lines := strings.Split(string(original), "\n")
 	proxyStart, proxyEnd := sectionBounds(lines, "Proxy")
 	if proxyStart == -1 {
-		return InstallResult{}, fmt.Errorf("%s has no [Proxy] section", profilePath)
+		lines, proxyStart, proxyEnd = insertProxySection(lines)
 	}
 
 	cleaned, proxyStart, proxyEnd := removeManagedProxyBlock(lines, proxyStart, proxyEnd)
@@ -101,6 +101,11 @@ func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
 		insertAt--
 	}
 	block := append([]string{""}, generated...)
+	if insertAt < len(cleaned) {
+		if strings.TrimSpace(cleaned[insertAt]) != "" {
+			block = append(block, "")
+		}
+	}
 	nextLines := append(cleaned[:insertAt], append(block, cleaned[insertAt:]...)...)
 
 	rendered := strings.Join(nextLines, "\n")
@@ -127,7 +132,7 @@ func sectionBounds(lines []string, section string) (start, end int) {
 	start = -1
 	end = -1
 	for i, line := range lines {
-		if strings.ToLower(strings.TrimSpace(line)) == want {
+		if normalizedSectionLine(line) == want {
 			start = i
 			break
 		}
@@ -136,43 +141,65 @@ func sectionBounds(lines []string, section string) (start, end int) {
 		return -1, -1
 	}
 	for i := start + 1; i < len(lines); i++ {
-		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		if normalizedSectionLine(lines[i]) != "" {
 			return start, i
 		}
 	}
 	return start, len(lines)
 }
 
+func insertProxySection(lines []string) ([]string, int, int) {
+	insertAt := len(lines)
+	if start, end := sectionBounds(lines, "General"); start != -1 {
+		insertAt = end
+	} else {
+		for i, line := range lines {
+			switch normalizedSectionLine(line) {
+			case "[proxy group]", "[rule]":
+				insertAt = i
+				goto found
+			}
+		}
+	}
+found:
+	block := []string{"[Proxy]"}
+	if insertAt > 0 && strings.TrimSpace(lines[insertAt-1]) != "" {
+		block = append([]string{""}, block...)
+	}
+	if insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) != "" {
+		block = append(block, "")
+	}
+	lines = append(lines[:insertAt], append(block, lines[insertAt:]...)...)
+	start, end := sectionBounds(lines, "Proxy")
+	return lines, start, end
+}
+
+func normalizedSectionLine(line string) string {
+	trimmed := strings.TrimPrefix(strings.TrimSpace(line), "\ufeff")
+	if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") {
+		return ""
+	}
+	return strings.ToLower(trimmed)
+}
+
 func removeManagedProxyBlock(lines []string, proxyStart, proxyEnd int) ([]string, int, int) {
 	out := make([]string, 0, len(lines))
-	inManaged := false
 	for i := 0; i < len(lines); i++ {
 		if i > proxyStart && i < proxyEnd {
 			trimmed := strings.TrimSpace(lines[i])
 			if trimmed == markerBegin {
-				inManaged = true
-				continue
-			}
-			if inManaged {
-				if trimmed == markerEnd {
-					inManaged = false
+				if end := findMarkerEnd(lines, i+1, proxyEnd); end != -1 {
+					i = end
 					continue
 				}
+				i = skipLegacyManagedLines(lines, i, proxyEnd)
+				continue
+			}
+			if trimmed == markerEnd {
 				continue
 			}
 			if trimmed == legacyMarker {
-				for i+1 < proxyEnd {
-					next := strings.TrimSpace(lines[i+1])
-					if next == "" {
-						i++
-						break
-					}
-					if !isLegacyManagedLine(next) {
-						break
-					}
-					i++
-				}
+				i = skipLegacyManagedLines(lines, i, proxyEnd)
 				continue
 			}
 		}
@@ -180,6 +207,30 @@ func removeManagedProxyBlock(lines []string, proxyStart, proxyEnd int) ([]string
 	}
 	start, end := sectionBounds(out, "Proxy")
 	return out, start, end
+}
+
+func findMarkerEnd(lines []string, start, end int) int {
+	for i := start; i < end; i++ {
+		if strings.TrimSpace(lines[i]) == markerEnd {
+			return i
+		}
+	}
+	return -1
+}
+
+func skipLegacyManagedLines(lines []string, markerIndex, proxyEnd int) int {
+	i := markerIndex
+	for i+1 < proxyEnd {
+		next := strings.TrimSpace(lines[i+1])
+		if next == "" {
+			return i + 1
+		}
+		if !isLegacyManagedLine(next) {
+			return i
+		}
+		i++
+	}
+	return i
 }
 
 func isLegacyManagedLine(line string) bool {
@@ -231,7 +282,7 @@ func proxyNames(lines []string) []string {
 	return names
 }
 
-var localPortPattern = regexp.MustCompile(`(?i)(?:^|,\s*)local-port\s*=\s*([0-9]+)\s*(?:,|$)`)
+var localPortPattern = regexp.MustCompile(`(?i)(?:^|,\s*)local-port\s*=\s*([0-9]+)\s*(?:,|[#;]|$)`)
 
 func localPorts(lines []string) map[int]bool {
 	ports := map[int]bool{}
