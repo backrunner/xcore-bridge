@@ -87,8 +87,14 @@ func runCommand(args []string, stdout io.Writer) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	fmt.Fprintf(stdout, "xcore-bridge listening on %s:%d for %s\n", *localHost, *localPort, node.DisplayName())
-	return bridge.Run(ctx, cfg)
+	server, err := bridge.Start(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer server.Close()
+	fmt.Fprintf(stdout, "xcore-bridge ready on %s:%d for %s\n", *localHost, *localPort, node.DisplayName())
+	<-ctx.Done()
+	return nil
 }
 
 func xrayConfigCommand(args []string, stdout io.Writer) error {

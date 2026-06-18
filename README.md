@@ -54,6 +54,8 @@ Run one bridge directly:
 xcore-bridge run --local-port 61080 --link 'vless://...'
 ```
 
+`run` starts xray-core in-process and waits until the local SOCKS5 inbound accepts TCP connections before printing `xcore-bridge ready`. Startup errors, invalid links, and occupied local ports return a non-zero exit code so Surge can retry according to its External Proxy behavior. On `SIGTERM`/`SIGINT`, the bridge closes xray-core and exits cleanly. If xray-core panics at runtime, the process is allowed to exit rather than trying to recover a possibly corrupt core state; Surge will start a fresh external process when the policy is used again.
+
 Generate the xray-core JSON for inspection:
 
 ```sh
