@@ -1,0 +1,277 @@
+package surge
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/orchiliao/xcore-bridge/internal/vless"
+)
+
+const (
+	markerBegin  = "# xcore-bridge managed external proxies begin"
+	markerEnd    = "# xcore-bridge managed external proxies end"
+	legacyMarker = "# xcore-bridge managed external proxies"
+)
+
+type InstallOptions struct {
+	Nodes     []vless.Node
+	ExecPath  string
+	BasePort  int
+	NoBackup  bool
+	WriteFile bool
+}
+
+type InstallResult struct {
+	Profile     string
+	PolicyNames []string
+	LocalPorts  []int
+	BackupPath  string
+}
+
+func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
+	if opts.BasePort == 0 {
+		opts.BasePort = 61080
+	}
+	if opts.BasePort < 0 || opts.BasePort > 65535 {
+		return InstallResult{}, fmt.Errorf("base port must be in 1..65535, or 0 for the default")
+	}
+	if len(opts.Nodes) == 0 {
+		return InstallResult{}, fmt.Errorf("no VLESS nodes supplied")
+	}
+	for _, node := range opts.Nodes {
+		if err := node.Validate(); err != nil {
+			return InstallResult{}, err
+		}
+	}
+	original, err := os.ReadFile(profilePath)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	lines := strings.Split(string(original), "\n")
+	proxyStart, proxyEnd := sectionBounds(lines, "Proxy")
+	if proxyStart == -1 {
+		return InstallResult{}, fmt.Errorf("%s has no [Proxy] section", profilePath)
+	}
+
+	cleaned, proxyStart, proxyEnd := removeManagedProxyBlock(lines, proxyStart, proxyEnd)
+	if proxyStart == -1 {
+		return InstallResult{}, fmt.Errorf("%s has no [Proxy] section after cleanup", profilePath)
+	}
+	existingNames := proxyNames(cleaned[proxyStart+1 : proxyEnd])
+	usedPorts := localPorts(cleaned[proxyStart+1 : proxyEnd])
+
+	generated := []string{markerBegin}
+	names := make([]string, 0, len(opts.Nodes))
+	ports := make([]int, 0, len(opts.Nodes))
+	nextPort := opts.BasePort
+	for _, node := range opts.Nodes {
+		name := uniqueName(existingNames, node.DisplayName())
+		existingNames = append(existingNames, name)
+		for nextPort <= 65535 && usedPorts[nextPort] {
+			nextPort++
+		}
+		if nextPort > 65535 {
+			return InstallResult{}, fmt.Errorf("no available local port at or above %d", opts.BasePort)
+		}
+		port := nextPort
+		usedPorts[port] = true
+		nextPort++
+		line, err := ProxyLine(ProxyLineOptions{
+			Node:             node,
+			Name:             name,
+			ExecPath:         opts.ExecPath,
+			LocalPort:        port,
+			IncludeAddresses: true,
+		})
+		if err != nil {
+			return InstallResult{}, err
+		}
+		generated = append(generated, line)
+		names = append(names, name)
+		ports = append(ports, port)
+	}
+	generated = append(generated, markerEnd)
+
+	insertAt := proxyEnd
+	for insertAt > proxyStart+1 && strings.TrimSpace(cleaned[insertAt-1]) == "" {
+		insertAt--
+	}
+	block := append([]string{""}, generated...)
+	nextLines := append(cleaned[:insertAt], append(block, cleaned[insertAt:]...)...)
+
+	rendered := strings.Join(nextLines, "\n")
+	if !strings.HasSuffix(rendered, "\n") {
+		rendered += "\n"
+	}
+	var backupPath string
+	if opts.WriteFile {
+		if !opts.NoBackup {
+			backupPath = profilePath + ".bak"
+			if err := os.WriteFile(backupPath, original, fileMode(profilePath)); err != nil {
+				return InstallResult{}, err
+			}
+		}
+		if err := atomicWriteFile(profilePath, []byte(rendered), fileMode(profilePath)); err != nil {
+			return InstallResult{}, err
+		}
+	}
+	return InstallResult{Profile: rendered, PolicyNames: names, LocalPorts: ports, BackupPath: backupPath}, nil
+}
+
+func sectionBounds(lines []string, section string) (start, end int) {
+	want := "[" + strings.ToLower(section) + "]"
+	start = -1
+	end = -1
+	for i, line := range lines {
+		if strings.ToLower(strings.TrimSpace(line)) == want {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		return -1, -1
+	}
+	for i := start + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			return start, i
+		}
+	}
+	return start, len(lines)
+}
+
+func removeManagedProxyBlock(lines []string, proxyStart, proxyEnd int) ([]string, int, int) {
+	out := make([]string, 0, len(lines))
+	inManaged := false
+	for i := 0; i < len(lines); i++ {
+		if i > proxyStart && i < proxyEnd {
+			trimmed := strings.TrimSpace(lines[i])
+			if trimmed == markerBegin {
+				inManaged = true
+				continue
+			}
+			if inManaged {
+				if trimmed == markerEnd {
+					inManaged = false
+					continue
+				}
+				continue
+			}
+			if trimmed == legacyMarker {
+				for i+1 < proxyEnd {
+					next := strings.TrimSpace(lines[i+1])
+					if next == "" {
+						i++
+						break
+					}
+					if !isLegacyManagedLine(next) {
+						break
+					}
+					i++
+				}
+				continue
+			}
+		}
+		out = append(out, lines[i])
+	}
+	start, end := sectionBounds(out, "Proxy")
+	return out, start, end
+}
+
+func isLegacyManagedLine(line string) bool {
+	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		return true
+	}
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "= external") &&
+		strings.Contains(lower, "local-port")
+}
+
+func uniqueName(existing []string, raw string) string {
+	base := sanitizeName(raw)
+	if base == "" {
+		base = "xcore-bridge"
+	}
+	name := base
+	for i := 2; contains(existing, name); i++ {
+		name = fmt.Sprintf("%s %d", base, i)
+	}
+	return name
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func proxyNames(lines []string) []string {
+	names := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		left, _, ok := strings.Cut(trimmed, "=")
+		if !ok {
+			continue
+		}
+		name := sanitizeName(left)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+var localPortPattern = regexp.MustCompile(`(?i)(?:^|,\s*)local-port\s*=\s*([0-9]+)\s*(?:,|$)`)
+
+func localPorts(lines []string) map[int]bool {
+	ports := map[int]bool{}
+	for _, line := range lines {
+		for _, match := range localPortPattern.FindAllStringSubmatch(line, -1) {
+			port, err := strconv.Atoi(match[1])
+			if err == nil && port > 0 && port <= 65535 {
+				ports[port] = true
+			}
+		}
+	}
+	return ports
+}
+
+func fileMode(path string) os.FileMode {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0o644
+	}
+	return info.Mode().Perm()
+}
+
+func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".xcore-bridge-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
