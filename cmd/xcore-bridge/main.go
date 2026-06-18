@@ -155,7 +155,10 @@ func surgeLineCommand(args []string, stdout io.Writer) error {
 	}
 	port := *localPort
 	if port == 0 {
-		port = surge.StablePort(node)
+		port, err = surge.FindAvailablePort(surge.StablePort(node), nil)
+		if err != nil {
+			return err
+		}
 	}
 	line, err := surge.ProxyLine(surge.ProxyLineOptions{
 		Node:             node,

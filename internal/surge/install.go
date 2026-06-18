@@ -23,6 +23,8 @@ type InstallOptions struct {
 	BasePort  int
 	NoBackup  bool
 	WriteFile bool
+
+	portAvailable func(string, int) bool
 }
 
 type InstallResult struct {
@@ -57,12 +59,14 @@ func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
 		lines, proxyStart, proxyEnd = insertProxySection(lines)
 	}
 
+	previousPorts := localPorts(lines[proxyStart+1 : proxyEnd])
 	cleaned, proxyStart, proxyEnd := removeManagedProxyBlock(lines, proxyStart, proxyEnd)
 	if proxyStart == -1 {
 		return InstallResult{}, fmt.Errorf("%s has no [Proxy] section after cleanup", profilePath)
 	}
 	existingNames := proxyNames(cleaned[proxyStart+1 : proxyEnd])
 	usedPorts := localPorts(cleaned[proxyStart+1 : proxyEnd])
+	reusablePorts := subtractPorts(previousPorts, usedPorts)
 
 	generated := []string{markerBegin}
 	names := make([]string, 0, len(opts.Nodes))
@@ -71,15 +75,12 @@ func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
 	for _, node := range opts.Nodes {
 		name := uniqueName(existingNames, node.DisplayName())
 		existingNames = append(existingNames, name)
-		for nextPort <= 65535 && usedPorts[nextPort] {
-			nextPort++
-		}
-		if nextPort > 65535 {
+		port, err := findAvailablePort(localProxyHost, nextPort, usedPorts, reusablePorts, opts.portAvailable)
+		if err != nil {
 			return InstallResult{}, fmt.Errorf("no available local port at or above %d", opts.BasePort)
 		}
-		port := nextPort
 		usedPorts[port] = true
-		nextPort++
+		nextPort = port + 1
 		line, err := ProxyLine(ProxyLineOptions{
 			Node:             node,
 			Name:             name,
@@ -287,6 +288,10 @@ var localPortPattern = regexp.MustCompile(`(?i)(?:^|,\s*)local-port\s*=\s*([0-9]
 func localPorts(lines []string) map[int]bool {
 	ports := map[int]bool{}
 	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
 		for _, match := range localPortPattern.FindAllStringSubmatch(line, -1) {
 			port, err := strconv.Atoi(match[1])
 			if err == nil && port > 0 && port <= 65535 {
