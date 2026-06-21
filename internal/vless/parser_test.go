@@ -52,3 +52,13 @@ func TestValidateRejectsInvalidRealityPublicKey(t *testing.T) {
 		t.Fatal("expected invalid REALITY public key to be rejected")
 	}
 }
+
+func TestValidateRejectsUnsupportedEncryption(t *testing.T) {
+	node, err := Parse("vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=aes-128-gcm&security=tls&type=tcp#Example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.Validate(); err == nil {
+		t.Fatal("expected unsupported encryption to be rejected")
+	}
+}

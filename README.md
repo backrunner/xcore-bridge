@@ -1,17 +1,41 @@
 # xcore-bridge
 
-`xcore-bridge` wraps `xray-core` so VLESS share links can be used as Surge for Mac External Proxy policies.
+`xcore-bridge` runs `xray-core` as a small Surge for Mac External Proxy helper. Give it a VLESS share link and a local port, and it exposes a local SOCKS5 inbound at `127.0.0.1:<local-port>` for Surge to use.
 
 The bridge is intentionally narrow:
 
-- Surge starts one `xcore-bridge run` process per external policy.
-- `xcore-bridge` exposes a local SOCKS5 inbound on `127.0.0.1:[local-port]`.
-- All inbound traffic is sent to the configured VLESS outbound.
-- No traffic splitting, policy routing, DNS steering, or subscription logic is added by the bridge.
-
-Surge External Proxy requires `exec` and `local-port`. Surge forwards requests to SOCKS5 `127.0.0.1:[local-port]` and restarts the process when the policy is used.
+- one Surge External Proxy policy starts one `xcore-bridge run` process;
+- all inbound SOCKS5 traffic is sent to the configured VLESS outbound;
+- no subscriptions, DNS steering, policy routing, traffic splitting, or profile management beyond the generated Surge `[Proxy]` lines.
 
 ## Install
+
+macOS and Linux release binaries are published for `amd64` and `arm64`.
+
+Stable release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh
+```
+
+Beta/prerelease channel:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh -s -- --beta
+```
+
+Install an exact tag or custom directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh -s -- --version v0.1.0 --bindir "$HOME/.local/bin"
+```
+
+OS-specific wrappers are also available:
+
+```sh
+./scripts/install-macos.sh
+./scripts/install-linux.sh --beta
+```
 
 For local development:
 
@@ -19,24 +43,9 @@ For local development:
 go install ./cmd/xcore-bridge
 ```
 
-Generic install script:
+## Surge Usage
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh
-```
-
-Homebrew release flow:
-
-```sh
-brew tap orchiliao/xcore-bridge
-brew install xcore-bridge
-```
-
-The Formula template lives in `packaging/homebrew/xcore-bridge.rb`; update `url` and `sha256` when publishing a tagged release.
-
-## Usage
-
-Generate a Surge `[Proxy]` line:
+Generate one Surge `[Proxy]` line:
 
 ```sh
 xcore-bridge surge-line --link 'vless://UUID@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=PUBLIC_KEY&sid=0123abcd&type=tcp#Example'
@@ -50,21 +59,7 @@ Example = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args 
 
 When `--local-port` is not provided, `surge-line` chooses a stable port from the share link and skips ports that are currently occupied on `127.0.0.1`. Passing `--local-port` keeps that exact port.
 
-Run one bridge directly:
-
-```sh
-xcore-bridge run --local-port 61080 --link 'vless://...'
-```
-
-`run` starts xray-core in-process and waits until the local SOCKS5 inbound accepts TCP connections before printing `xcore-bridge ready`. Startup errors, invalid links, and occupied local ports return a non-zero exit code so Surge can retry according to its External Proxy behavior. On `SIGTERM`/`SIGINT`, the bridge closes xray-core and exits cleanly. If xray-core panics at runtime, the process is allowed to exit rather than trying to recover a possibly corrupt core state; Surge will start a fresh external process when the policy is used again.
-
-Generate the xray-core JSON for inspection:
-
-```sh
-xcore-bridge xray-config --local-port 61080 --link 'vless://...'
-```
-
-Install multiple share links into an existing Surge profile:
+Install multiple links into an existing Surge profile:
 
 ```sh
 xcore-bridge surge-install \
@@ -72,16 +67,47 @@ xcore-bridge surge-install \
   --links-file ./links.txt
 ```
 
-`links.txt` is one VLESS share link per line. Blank lines and `#` comments are ignored.
-`surge-install` writes only inside the `[Proxy]` section, replaces the previous `# xcore-bridge managed external proxies begin/end` block, skips existing policy names, profile-used `local-port` values, and currently occupied `127.0.0.1` TCP ports, and writes `profile.conf.bak` before changing the file. Use `--backup=false` to skip the backup.
+`links.txt` contains one VLESS share link per line. Blank lines and `#` comments are ignored.
 
-Port probing happens when the Surge line or profile is generated, so it is best effort: another process can still claim the port before Surge starts `xcore-bridge`. If that happens, `xcore-bridge run` exits non-zero instead of serving on the wrong port.
+`surge-install` writes only inside the `[Proxy]` section. It replaces the previous managed block between:
+
+```ini
+# xcore-bridge managed external proxies begin
+# xcore-bridge managed external proxies end
+```
+
+It also avoids existing policy names, profile-used `local-port` values, and currently occupied `127.0.0.1` TCP ports. By default it writes `profile.conf.bak` before changing the file; use `--backup=false` to skip that backup or `--dry-run` to print the updated profile without writing.
+
+Port probing is best effort at profile-generation time. If another process claims the port before Surge starts the bridge, `xcore-bridge run` exits non-zero instead of serving on the wrong port.
 
 Surge profile lines generated by `surge-line` and `surge-install` contain the full VLESS share link as process arguments. Treat the profile as sensitive configuration.
 
-## Supported link fields
+## Direct Commands
 
-The first target is VLESS + REALITY + Vision:
+Run one bridge directly:
+
+```sh
+xcore-bridge run --local-port 61080 --link 'vless://...'
+```
+
+`run` starts xray-core in-process and waits until the local SOCKS5 inbound accepts TCP connections before printing `xcore-bridge ready`. Startup errors, invalid links, and occupied local ports return a non-zero exit code so Surge can retry. On `SIGTERM` or `SIGINT`, the bridge closes xray-core and exits cleanly.
+
+Print the generated xray-core JSON for inspection:
+
+```sh
+xcore-bridge xray-config --local-port 61080 --link 'vless://...'
+```
+
+Print the binary version:
+
+```sh
+xcore-bridge version
+xcore-bridge version --verbose
+```
+
+## Supported Links
+
+The primary supported target is VLESS + REALITY + Vision:
 
 - `encryption=none`
 - `flow=xtls-rprx-vision`
@@ -93,11 +119,65 @@ The first target is VLESS + REALITY + Vision:
 - `spx` / `spiderX`
 - `type=tcp`
 
-The generator also maps common stream fields for `tls`, `ws`, `grpc`, `httpupgrade`, and `splithttp`, but REALITY + Vision is the configuration covered by tests.
+The generator also maps common stream fields for `tls`, `ws`, `grpc`, `httpupgrade`, and `splithttp`. REALITY + Vision is the main tested path.
+
+## Xray Version Management
+
+`xcore-bridge` does not download or shell out to an external `xray` executable. It imports `github.com/xtls/xray-core` as a Go module and embeds that code into the released `xcore-bridge` binary. The pinned xray-core version is in `go.mod`.
+
+Check the embedded version:
+
+```sh
+xcore-bridge version --verbose
+```
+
+Update xray-core manually:
+
+```sh
+./scripts/update-xray-core.sh latest
+./scripts/update-xray-core.sh v1.260327.0
+```
+
+The update script runs `go get`, `go mod tidy`, and `go test ./...`. Dependabot is also configured to open weekly Go module update PRs, including xray-core. After an xray-core update is merged, publish a beta or stable `xcore-bridge` release; users then upgrade with the same install script. There is no separate xray binary to replace on user machines.
+
+## Release Flow
+
+GitHub Actions runs tests on pushes and pull requests. Tags beginning with `v` publish release assets for:
+
+- `darwin/amd64`
+- `darwin/arm64`
+- `linux/amd64`
+- `linux/arm64`
+
+Stable release tags use plain SemVer, for example:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Beta or prerelease tags include a SemVer prerelease suffix:
+
+```sh
+git tag v0.2.0-beta.1
+git push origin v0.2.0-beta.1
+```
+
+The workflow marks tags containing `-` as GitHub prereleases. The install script uses that distinction: stable installs read the latest non-prerelease release, while `--beta` selects the newest prerelease.
 
 ## Development
 
 ```sh
 go test ./...
-go build ./cmd/xcore-bridge
+go build -trimpath -ldflags "-X main.version=dev" ./cmd/xcore-bridge
+```
+
+Cross-build the same matrix used by CI:
+
+```sh
+for os in darwin linux; do
+  for arch in amd64 arm64; do
+    CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=dev" -o "dist/xcore-bridge-$os-$arch" ./cmd/xcore-bridge
+  done
+done
 ```

@@ -30,6 +30,20 @@ func TestSurgeLineUsesExecutablePathByDefault(t *testing.T) {
 	}
 }
 
+func TestVersionVerboseIncludesXrayCoreVersion(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := run([]string{"version", "--verbose"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "xcore-bridge ") {
+		t.Fatalf("verbose version missing xcore-bridge version:\n%s", output)
+	}
+	if !strings.Contains(output, "xray-core ") {
+		t.Fatalf("verbose version missing xray-core version:\n%s", output)
+	}
+}
+
 func TestRunRejectsBothLinkForms(t *testing.T) {
 	err := run([]string{
 		"xray-config",

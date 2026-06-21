@@ -38,7 +38,7 @@ func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
 	if opts.BasePort == 0 {
 		opts.BasePort = 61080
 	}
-	if opts.BasePort < 0 || opts.BasePort > 65535 {
+	if opts.BasePort <= 0 || opts.BasePort > 65535 {
 		return InstallResult{}, fmt.Errorf("base port must be in 1..65535, or 0 for the default")
 	}
 	if len(opts.Nodes) == 0 {

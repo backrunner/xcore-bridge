@@ -83,7 +83,7 @@ func JSONConfig(cfg Config) ([]byte, error) {
 func vlessSettings(node vless.Node) (map[string]any, error) {
 	user := map[string]any{
 		"id":         node.ID,
-		"encryption": valueOrDefault(node.Param("encryption"), "none"),
+		"encryption": strings.ToLower(valueOrDefault(node.Param("encryption"), "none")),
 	}
 	if flow := node.Flow(); flow != "" {
 		user["flow"] = flow
@@ -129,7 +129,7 @@ func streamSettings(node vless.Node) map[string]any {
 			}
 		}
 	case "ws":
-		settings["wsSettings"] = hostPathSettings(node)
+		settings["wsSettings"] = websocketSettings(node)
 	case "httpupgrade":
 		settings["httpupgradeSettings"] = httpUpgradeSettings(node)
 	case "splithttp":
@@ -161,13 +161,10 @@ func tlsSettings(node vless.Node) map[string]any {
 	return out
 }
 
-func hostPathSettings(node vless.Node) map[string]any {
+func websocketSettings(node vless.Node) map[string]any {
 	out := map[string]any{}
 	copyParam(out, "host", node, "host")
 	copyParam(out, "path", node, "path")
-	if host := node.Param("host"); host != "" {
-		out["headers"] = map[string]string{"Host": host}
-	}
 	return out
 }
 
@@ -179,7 +176,9 @@ func httpUpgradeSettings(node vless.Node) map[string]any {
 }
 
 func splitHTTPSettings(node vless.Node) map[string]any {
-	out := hostPathSettings(node)
+	out := map[string]any{}
+	copyParam(out, "host", node, "host")
+	copyParam(out, "path", node, "path")
 	copyParam(out, "mode", node, "mode")
 	return out
 }

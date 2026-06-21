@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build archive
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          asset="xcore-bridge_${VERSION}_${GOOS}_${GOARCH}"
+          mkdir -p dist "$asset"
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "$asset/xcore-bridge" ./cmd/xcore-bridge
+          cp README.md LICENSE "$asset/"
+          tar -czf "dist/${asset}.tar.gz" "$asset"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcore-bridge-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -eu
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          prerelease=false
+          if printf '%s' "$TAG_NAME" | grep -q -- '-'; then
+            prerelease=true
+          fi
+
+          notes_file="$(mktemp)"
+          {
+            echo "Release $TAG_NAME"
+            echo
+            if [ "$prerelease" = true ]; then
+              echo "This is a beta/prerelease build."
+            else
+              echo "This is a stable release."
+            fi
+          } > "$notes_file"
+
+          args=""
+          if [ "$prerelease" = true ]; then
+            args="--prerelease --latest=false"
+          else
+            args="--latest"
+          fi
+
+          gh release create "$TAG_NAME" dist/*.tar.gz dist/checksums.txt \
+            --repo "$REPO" \
+            --title "$TAG_NAME" \
+            --notes-file "$notes_file" \
+            $args

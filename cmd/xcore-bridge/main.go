@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,7 +18,7 @@ import (
 	"github.com/orchiliao/xcore-bridge/internal/vless"
 )
 
-const version = "0.1.0"
+var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -43,8 +44,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "surge-install":
 		return surgeInstallCommand(args[1:], stdout)
 	case "version", "--version", "-v":
-		fmt.Fprintln(stdout, version)
-		return nil
+		return versionCommand(args[1:], stdout)
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return nil
@@ -231,14 +231,41 @@ func surgeInstallCommand(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			return value
+func versionCommand(args []string, stdout io.Writer) error {
+	if len(args) > 1 {
+		return errors.New("version accepts at most one flag")
+	}
+	if len(args) == 1 {
+		switch args[0] {
+		case "--verbose", "-v":
+			fmt.Fprintf(stdout, "xcore-bridge %s\n", version)
+			fmt.Fprintf(stdout, "xray-core %s\n", xrayCoreVersion())
+			return nil
+		default:
+			return fmt.Errorf("unknown version flag %q", args[0])
 		}
 	}
-	return ""
+	fmt.Fprintln(stdout, version)
+	return nil
+}
+
+func xrayCoreVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, dep := range info.Deps {
+		if dep.Path == "github.com/xtls/xray-core" {
+			if dep.Replace != nil {
+				return dep.Replace.Version
+			}
+			if dep.Version != "" {
+				return dep.Version
+			}
+			return "(devel)"
+		}
+	}
+	return "unknown"
 }
 
 func oneLinkArg(flagValue string, positional []string, command string) (string, error) {

@@ -112,6 +112,9 @@ func (n Node) Validate() error {
 	if n.ID == "" || n.Host == "" || n.Port <= 0 || n.Port > 65535 {
 		return errors.New("incomplete VLESS node")
 	}
+	if encryption := n.Param("encryption"); encryption != "" && strings.ToLower(encryption) != "none" {
+		return fmt.Errorf("unsupported VLESS encryption %q", encryption)
+	}
 	switch n.Security() {
 	case "", "none", "tls", "reality":
 	default:

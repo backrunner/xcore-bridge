@@ -303,6 +303,33 @@ func TestInstallRejectsInvalidBasePort(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected invalid base port to be rejected")
 	}
+	if _, err := Install(profile, InstallOptions{
+		Nodes:    []vless.Node{node},
+		BasePort: -1,
+	}); err == nil {
+		t.Fatal("expected negative base port to be rejected")
+	}
+}
+
+func TestInstallDefaultBasePortWhenZero(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Install(profile, InstallOptions{
+		Nodes:    []vless.Node{testSurgeNode(t, "Demo")},
+		BasePort: 0,
+		portAvailable: func(_ string, port int) bool {
+			return port == 61080
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.LocalPorts[0]; got != 61080 {
+		t.Fatalf("expected default base port 61080, got %d", got)
+	}
 }
 
 func TestInstallCreatesProxySectionWhenMissing(t *testing.T) {

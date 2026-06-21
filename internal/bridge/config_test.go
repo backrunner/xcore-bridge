@@ -79,3 +79,51 @@ func TestJSONConfigGRPCMultiModeLoadsInXray(t *testing.T) {
 		t.Fatalf("xray rejected generated config: %v\n%s", err, data)
 	}
 }
+
+func TestJSONConfigWebSocketHostUsesTopLevelHost(t *testing.T) {
+	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=ws&host=cdn.example.com&path=%2Fws#WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := JSONConfig(Config{Node: node, LocalHost: "127.0.0.1", LocalPort: 61080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	outbounds := doc["outbounds"].([]any)
+	streamSettings := outbounds[0].(map[string]any)["streamSettings"].(map[string]any)
+	wsSettings := streamSettings["wsSettings"].(map[string]any)
+	if got := wsSettings["host"]; got != "cdn.example.com" {
+		t.Fatalf("expected WebSocket host to be top-level host, got %#v in %s", got, data)
+	}
+	if _, ok := wsSettings["headers"]; ok {
+		t.Fatalf("WebSocket settings should not emit deprecated Host header:\n%s", data)
+	}
+}
+
+func TestJSONConfigSplitHTTPHostUsesTopLevelHost(t *testing.T) {
+	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=splithttp&host=cdn.example.com&path=%2Fxhttp&mode=stream-up#SplitHTTP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := JSONConfig(Config{Node: node, LocalHost: "127.0.0.1", LocalPort: 61080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	outbounds := doc["outbounds"].([]any)
+	streamSettings := outbounds[0].(map[string]any)["streamSettings"].(map[string]any)
+	splitHTTPSettings := streamSettings["splithttpSettings"].(map[string]any)
+	if got := splitHTTPSettings["host"]; got != "cdn.example.com" {
+		t.Fatalf("expected splitHTTP host to be top-level host, got %#v in %s", got, data)
+	}
+	if _, ok := splitHTTPSettings["headers"]; ok {
+		t.Fatalf("splitHTTP settings should not emit Host header:\n%s", data)
+	}
+}
