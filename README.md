@@ -12,16 +12,22 @@ The bridge is intentionally narrow:
 
 macOS and Linux release binaries are published for `amd64` and `arm64`.
 
-Stable release:
+Default install. The script installs the latest stable release when one exists; if no stable release exists yet, it falls back to the newest beta/prerelease:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh
 ```
 
-Beta/prerelease channel:
+Force the beta/prerelease channel:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh -s -- --beta
+```
+
+Require a stable release and fail instead of falling back to beta:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh -s -- --stable
 ```
 
 Install an exact tag or custom directory:
@@ -163,7 +169,7 @@ git tag v0.2.0-beta.1
 git push origin v0.2.0-beta.1
 ```
 
-The workflow marks tags containing `-` as GitHub prereleases. The install script uses that distinction: stable installs read the latest non-prerelease release, while `--beta` selects the newest prerelease.
+The workflow marks tags containing `-` as GitHub prereleases. The install script uses that distinction: the default install reads the latest non-prerelease release first and falls back to prerelease only when no stable release exists; `--beta` always selects the newest prerelease.
 
 ## Development
 

@@ -2,7 +2,7 @@
 set -eu
 
 repo="${XCORE_BRIDGE_REPO:-orchiliao/xcore-bridge}"
-channel="${XCORE_BRIDGE_CHANNEL:-stable}"
+channel="${XCORE_BRIDGE_CHANNEL:-auto}"
 version="${XCORE_BRIDGE_VERSION:-}"
 bindir="${XCORE_BRIDGE_INSTALL_DIR:-${PREFIX:-/usr/local}/bin}"
 api_base="${GITHUB_API_URL:-https://api.github.com}"
@@ -13,7 +13,7 @@ usage() {
 Usage: install.sh [--beta|--stable] [--version vX.Y.Z] [--bindir DIR]
 
 Environment:
-  XCORE_BRIDGE_CHANNEL     stable or beta
+  XCORE_BRIDGE_CHANNEL     auto, stable, or beta; default auto
   XCORE_BRIDGE_VERSION     exact GitHub release tag
   XCORE_BRIDGE_INSTALL_DIR install directory, default /usr/local/bin
   XCORE_BRIDGE_REPO        owner/repo, default orchiliao/xcore-bridge
@@ -64,9 +64,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$channel" in
-  stable|beta) ;;
+  auto|stable|beta) ;;
   *)
-    echo "install.sh: channel must be stable or beta" >&2
+    echo "install.sh: channel must be auto, stable, or beta" >&2
     exit 2
     ;;
 esac
@@ -103,23 +103,48 @@ case "$arch" in
     ;;
 esac
 
-if [ -z "$version" ]; then
-  if [ "$channel" = "stable" ]; then
-    version="$(curl -fsSL "$api_base/repos/$repo/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-  else
-    version="$(curl -fsSL "$api_base/repos/$repo/releases" |
-      tr -d '\n' |
-      sed 's/}[[:space:]]*,[[:space:]]*{/}\
+resolve_stable_release() {
+  curl -fsSL "$api_base/repos/$repo/releases/latest" 2>/dev/null |
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    head -n 1
+}
+
+resolve_beta_release() {
+  curl -fsSL "$api_base/repos/$repo/releases" 2>/dev/null |
+    tr -d '\n' |
+    sed 's/}[[:space:]]*,[[:space:]]*{/}\
 {/g' |
-      sed -n '/"prerelease"[[:space:]]*:[[:space:]]*true/ {
-        s/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p
-        q
-      }')"
-  fi
+    sed -n '/"prerelease"[[:space:]]*:[[:space:]]*true/ {
+      s/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p
+      q
+    }'
+}
+
+resolved_channel="$channel"
+if [ -z "$version" ]; then
+  case "$channel" in
+    auto)
+      version="$(resolve_stable_release || true)"
+      if [ -n "$version" ]; then
+        resolved_channel="stable"
+      else
+        version="$(resolve_beta_release || true)"
+        resolved_channel="beta"
+      fi
+      ;;
+    stable)
+      version="$(resolve_stable_release || true)"
+      ;;
+    beta)
+      version="$(resolve_beta_release || true)"
+      ;;
+  esac
+else
+  resolved_channel="tag"
 fi
 
 if [ -z "$version" ]; then
-  echo "install.sh: could not resolve a $channel release for $repo" >&2
+  echo "install.sh: could not resolve a release for $repo (channel: $channel)" >&2
   exit 1
 fi
 
@@ -128,7 +153,7 @@ base_url="$download_base/$repo/releases/download/$version"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
-echo "Downloading xcore-bridge $version ($os/$arch, $channel)"
+echo "Downloading xcore-bridge $version ($os/$arch, $resolved_channel)"
 curl -fsSL "$base_url/$asset" -o "$tmpdir/$asset"
 curl -fsSL "$base_url/checksums.txt" -o "$tmpdir/checksums.txt"
 
