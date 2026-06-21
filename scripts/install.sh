@@ -87,9 +87,8 @@ os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
 case "$os" in
   darwin) os="darwin" ;;
-  linux) os="linux" ;;
   *)
-    echo "install.sh: unsupported OS: $os" >&2
+    echo "install.sh: unsupported OS: $os; xcore-bridge is only distributed for macOS because Surge for Mac is required" >&2
     exit 1
     ;;
 esac

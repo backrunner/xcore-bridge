@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -21,14 +22,17 @@ import (
 var version = "dev"
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := runWithIO(os.Args[1:], os.Stdout, os.Stderr, os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "xcore-bridge:", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
-	_ = stderr
+	return runWithIO(args, stdout, stderr, nil)
+}
+
+func runWithIO(args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
 		printUsage(stdout)
 		return nil
@@ -42,7 +46,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "surge-line":
 		return surgeLineCommand(args[1:], stdout)
 	case "surge-install":
-		return surgeInstallCommand(args[1:], stdout)
+		return surgeInstallCommand(args[1:], stdout, stderr, stdin)
 	case "version", "--version", "-v":
 		return versionCommand(args[1:], stdout)
 	case "help", "--help", "-h":
@@ -174,20 +178,42 @@ func surgeLineCommand(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func surgeInstallCommand(args []string, stdout io.Writer) error {
+func surgeInstallCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+	if stderr == nil {
+		stderr = io.Discard
+	}
 	fs := flag.NewFlagSet("surge-install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	profile := fs.String("profile", "", "Surge profile path")
+	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
 	linksFile := fs.String("links-file", "", "file with one VLESS share link per line")
 	execPath := fs.String("exec", defaultExecPath(), "path to xcore-bridge executable")
 	basePort := fs.Int("base-port", 61080, "first local port to assign")
-	backup := fs.Bool("backup", true, "write a .bak copy before changing the profile")
+	backup := fs.Bool("backup", true, "deprecated; surge-install always writes one .bak backup")
 	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
+	yes := fs.Bool("yes", false, "confirm first-time profile changes without prompting")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *profile == "" {
-		return errors.New("surge-install requires --profile")
+	if !*backup {
+		return errors.New("surge-install always writes a single .bak backup; --backup=false is no longer supported")
+	}
+
+	profilePath := strings.TrimSpace(*profile)
+	if profilePath == "" {
+		candidates, err := surge.DiscoverProfiles()
+		if err != nil {
+			return err
+		}
+		if len(candidates) == 0 {
+			return errors.New("surge-install could not find a Surge profile in iCloud Drive; pass --profile to choose one explicitly")
+		}
+		selected := candidates[0]
+		profilePath = selected.Path
+		if len(candidates) == 1 {
+			fmt.Fprintf(stderr, "xcore-bridge: found Surge profile %s (%s)\n", profilePath, selected.Source)
+		} else {
+			fmt.Fprintf(stderr, "xcore-bridge: found %d Surge profiles; using %s (%s)\n", len(candidates), profilePath, selected.Source)
+		}
 	}
 
 	links := fs.Args()
@@ -210,11 +236,25 @@ func surgeInstallCommand(args []string, stdout io.Writer) error {
 		}
 		nodes = append(nodes, node)
 	}
-	updated, err := surge.Install(*profile, surge.InstallOptions{
+
+	alreadyManaged, err := surge.ProfileHasManagedBlock(profilePath)
+	if err != nil {
+		return err
+	}
+	if !*dryRun && !*yes && !alreadyManaged {
+		ok, err := confirmFirstProfileChange(stdin, stderr, profilePath)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("profile change was not confirmed")
+		}
+	}
+
+	updated, err := surge.Install(profilePath, surge.InstallOptions{
 		Nodes:     nodes,
 		ExecPath:  *execPath,
 		BasePort:  *basePort,
-		NoBackup:  !*backup,
 		WriteFile: !*dryRun,
 	})
 	if err != nil {
@@ -224,7 +264,10 @@ func surgeInstallCommand(args []string, stdout io.Writer) error {
 		fmt.Fprint(stdout, updated.Profile)
 		return nil
 	}
-	fmt.Fprintf(stdout, "installed %d external proxy policies into %s\n", len(updated.PolicyNames), *profile)
+	fmt.Fprintf(stdout, "installed %d external proxy policies into %s\n", len(updated.PolicyNames), profilePath)
+	if updated.BackupPath != "" {
+		fmt.Fprintf(stdout, "backup: %s\n", updated.BackupPath)
+	}
 	for i, name := range updated.PolicyNames {
 		fmt.Fprintf(stdout, "%s local-port=%d\n", name, updated.LocalPorts[i])
 	}
@@ -312,13 +355,33 @@ func readLinksFile(path string) ([]string, error) {
 	return links, nil
 }
 
+func confirmFirstProfileChange(stdin io.Reader, stderr io.Writer, profilePath string) (bool, error) {
+	if stdin == nil {
+		return false, nil
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	fmt.Fprintf(stderr, "xcore-bridge will update this Surge profile for the first time:\n  %s\nA single backup will be kept at:\n  %s.bak\nContinue? [y/N] ", profilePath, profilePath)
+	answer, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `xcore-bridge wraps xray-core as a Surge External Proxy program.
 
 Usage:
   xcore-bridge run --local-port 61080 --link 'vless://...'
   xcore-bridge surge-line --link 'vless://...'
-  xcore-bridge surge-install --profile ~/Library/Application\ Support/Surge/Profiles/example.conf --links-file links.txt
+  xcore-bridge surge-install --links-file links.txt
   xcore-bridge xray-config --local-port 61080 --link 'vless://...'
 
 Commands:

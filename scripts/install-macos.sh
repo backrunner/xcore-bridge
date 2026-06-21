@@ -4,7 +4,7 @@ set -eu
 case "$(uname -s)" in
   Darwin) ;;
   *)
-    echo "install-macos.sh: this installer is for macOS; use scripts/install-linux.sh on Linux" >&2
+    echo "install-macos.sh: this installer is for macOS; xcore-bridge requires Surge for Mac" >&2
     exit 1
     ;;
 esac

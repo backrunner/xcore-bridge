@@ -100,7 +100,128 @@ func TestSurgeInstallLinksFileAcceptsUppercaseScheme(t *testing.T) {
 	}
 }
 
+func TestSurgeInstallAutoDiscoversICloudProfileAndConfirmsFirstWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, "Library", "Mobile Documents", "iCloud~com~nssurge~Inc~Surge", "Documents", "Profiles")
+	if err := os.MkdirAll(profiles, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(profiles, "default.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := runWithIO([]string{
+		"surge-install",
+		"--links-file", writeLinksFile(t, home),
+	}, &stdout, &stderr, strings.NewReader("y\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "installed 1 external proxy policies into "+profile) {
+		t.Fatalf("unexpected install output:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "backup: "+profile+".bak") {
+		t.Fatalf("install output should mention backup:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "using "+profile) && !strings.Contains(stderr.String(), "found Surge profile "+profile) {
+		t.Fatalf("expected discovery notice, got:\n%s", stderr.String())
+	}
+	updated, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), "Demo = external") {
+		t.Fatalf("profile was not updated:\n%s", updated)
+	}
+}
+
+func TestSurgeInstallRequiresConfirmationForFirstWrite(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := runWithIO([]string{
+		"surge-install",
+		"--profile", profile,
+		"--links-file", writeLinksFile(t, dir),
+	}, &stdout, &stderr, strings.NewReader("n\n"))
+	if err == nil {
+		t.Fatal("expected missing confirmation to fail")
+	}
+	after, readErr := os.ReadFile(profile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(after) != "[Proxy]\nDIRECTISH = direct\n" {
+		t.Fatalf("profile changed after denied confirmation:\n%s", after)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Continue? [y/N]") {
+		t.Fatalf("expected confirmation prompt, got:\n%s", stderr.String())
+	}
+}
+
+func TestSurgeInstallYesSkipsFirstWritePrompt(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := runWithIO([]string{
+		"surge-install",
+		"--yes",
+		"--profile", profile,
+		"--links-file", writeLinksFile(t, dir),
+	}, &stdout, &stderr, strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr.String(), "Continue?") {
+		t.Fatalf("did not expect confirmation prompt:\n%s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "installed 1 external proxy policies") {
+		t.Fatalf("unexpected output:\n%s", stdout.String())
+	}
+}
+
+func TestSurgeInstallRejectsBackupFalse(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := runWithIO([]string{
+		"surge-install",
+		"--backup=false",
+		"--profile", profile,
+		"--links-file", writeLinksFile(t, dir),
+	}, &bytes.Buffer{}, &bytes.Buffer{}, strings.NewReader("y\n"))
+	if err == nil {
+		t.Fatal("expected --backup=false to be rejected")
+	}
+}
+
 var localPortLinePattern = regexp.MustCompile(`local-port = ([0-9]+)`)
+
+func writeLinksFile(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "links.txt")
+	data := "VLESS://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#Demo\n"
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 func extractLocalPort(t *testing.T, line string) int {
 	t.Helper()

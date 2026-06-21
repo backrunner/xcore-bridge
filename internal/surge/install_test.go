@@ -251,6 +251,57 @@ func TestInstallRejectsInvalidNodeBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestInstallOverwritesSingleBackup(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := "[Proxy]\nDIRECTISH = direct\n"
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(profile, InstallOptions{
+		Nodes:     []vless.Node{testSurgeNode(t, "First")},
+		ExecPath:  "/opt/homebrew/bin/xcore-bridge",
+		BasePort:  61080,
+		WriteFile: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstBackup, err := os.ReadFile(profile + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstBackup) != initial {
+		t.Fatalf("first backup should contain the original profile:\n%s", firstBackup)
+	}
+
+	beforeSecond, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(profile, InstallOptions{
+		Nodes:     []vless.Node{testSurgeNode(t, "Second")},
+		ExecPath:  "/opt/homebrew/bin/xcore-bridge",
+		BasePort:  61080,
+		WriteFile: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondBackup, err := os.ReadFile(profile + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(secondBackup) != string(beforeSecond) {
+		t.Fatalf("backup should be overwritten with the immediate previous profile:\n%s", secondBackup)
+	}
+	matches, err := filepath.Glob(profile + ".bak*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0] != profile+".bak" {
+		t.Fatalf("expected only one backup, got %#v", matches)
+	}
+}
+
 func TestInstallDoesNotDeleteUserProxyAfterLegacyMarker(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
@@ -412,6 +463,67 @@ Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 	}
 	if !strings.Contains(result.Profile, "Manual = ss") {
 		t.Fatalf("manual proxy after unclosed marker was removed:\n%s", result.Profile)
+	}
+}
+
+func TestDiscoverProfilesPrefersICloudDefaultProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	icloudProfiles := filepath.Join(home, "Library", "Mobile Documents", "iCloud~com~nssurge~Inc~Surge", "Documents", "Profiles")
+	localProfiles := filepath.Join(home, "Library", "Application Support", "Surge", "Profiles")
+	for _, dir := range []string{icloudProfiles, localProfiles} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(icloudProfiles, "work.conf"),
+		filepath.Join(icloudProfiles, "default.conf"),
+		filepath.Join(localProfiles, "default.conf"),
+	} {
+		if err := os.WriteFile(path, []byte("[Proxy]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	candidates, err := DiscoverProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 3 {
+		t.Fatalf("expected 3 candidates, got %#v", candidates)
+	}
+	want := filepath.Join(icloudProfiles, "default.conf")
+	if candidates[0].Path != want {
+		t.Fatalf("expected iCloud default profile first, got %#v", candidates)
+	}
+	if candidates[0].Source != "iCloud Drive" {
+		t.Fatalf("unexpected source: %#v", candidates[0])
+	}
+}
+
+func TestProfileHasManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := ProfileHasManagedBlock(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("profile should not be marked as managed")
+	}
+	if err := os.WriteFile(profile, []byte("[Proxy]\n"+markerBegin+"\n"+markerEnd+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = ProfileHasManagedBlock(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("profile should be marked as managed")
 	}
 }
 
