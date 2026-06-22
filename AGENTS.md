@@ -29,6 +29,7 @@ Linux release binaries and Linux installers are intentionally unsupported becaus
 ## Development Standards
 
 - Keep the codebase small and direct; prefer existing local helpers over new abstractions.
+- Keep files organized by responsibility. Split large single files into focused modules in the package that owns the behavior instead of letting command, profile editing, discovery, parsing, and file I/O logic accumulate together.
 - Use Go standard library APIs for filesystem, path, and parsing work where possible.
 - Keep tests focused on behavior that protects user profiles: discovery, confirmation, backup, section editing, and port/name conflict handling.
 - Run `gofmt` on changed Go files.
