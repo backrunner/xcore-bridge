@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orchiliao/xcore-bridge/internal/vless"
+	"github.com/backrunner/xcore-bridge/internal/vless"
 )
 
 func TestProxyLine(t *testing.T) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-repo="${XCORE_BRIDGE_REPO:-orchiliao/xcore-bridge}"
+repo="${XCORE_BRIDGE_REPO:-backrunner/xcore-bridge}"
 channel="${XCORE_BRIDGE_CHANNEL:-auto}"
 version="${XCORE_BRIDGE_VERSION:-}"
 bindir="${XCORE_BRIDGE_INSTALL_DIR:-${PREFIX:-/usr/local}/bin}"
@@ -16,7 +16,7 @@ Environment:
   XCORE_BRIDGE_CHANNEL     auto, stable, or beta; default auto
   XCORE_BRIDGE_VERSION     exact GitHub release tag
   XCORE_BRIDGE_INSTALL_DIR install directory, default /usr/local/bin
-  XCORE_BRIDGE_REPO        owner/repo, default orchiliao/xcore-bridge
+  XCORE_BRIDGE_REPO        owner/repo, default backrunner/xcore-bridge
 EOF
 }
 

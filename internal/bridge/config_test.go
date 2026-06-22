@@ -7,7 +7,7 @@ import (
 
 	_ "github.com/xtls/xray-core/main/distro/all"
 
-	"github.com/orchiliao/xcore-bridge/internal/vless"
+	"github.com/backrunner/xcore-bridge/internal/vless"
 	"github.com/xtls/xray-core/core"
 )
 

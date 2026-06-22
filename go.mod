@@ -1,4 +1,4 @@
-module github.com/orchiliao/xcore-bridge
+module github.com/backrunner/xcore-bridge
 
 go 1.26
 

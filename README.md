@@ -9,7 +9,7 @@ Add VLESS links to Surge for Mac as External Proxy policies.
 Install:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/orchiliao/xcore-bridge/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/backrunner/xcore-bridge/main/scripts/install.sh | sh
 ```
 
 Add one VLESS link to Surge:

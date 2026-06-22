@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/orchiliao/xcore-bridge/internal/vless"
+	"github.com/backrunner/xcore-bridge/internal/vless"
 )
 
 func TestStartListensAndCloseReleasesPort(t *testing.T) {

@@ -14,9 +14,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/orchiliao/xcore-bridge/internal/bridge"
-	"github.com/orchiliao/xcore-bridge/internal/surge"
-	"github.com/orchiliao/xcore-bridge/internal/vless"
+	"github.com/backrunner/xcore-bridge/internal/bridge"
+	"github.com/backrunner/xcore-bridge/internal/surge"
+	"github.com/backrunner/xcore-bridge/internal/vless"
 )
 
 var version = "dev"
