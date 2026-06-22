@@ -9,7 +9,7 @@ import (
 const localProxyHost = "127.0.0.1"
 
 func FindAvailablePort(start int, used map[int]bool) (int, error) {
-	return findAvailablePort(localProxyHost, start, used, nil, TCPPortAvailable)
+	return findAvailablePort(localProxyHost, start, used, nil, LocalProxyPortAvailable)
 }
 
 func TCPPortAvailable(host string, port int) bool {
@@ -27,6 +27,25 @@ func TCPPortAvailable(host string, port int) bool {
 	return true
 }
 
+func UDPPortAvailable(host string, port int) bool {
+	if port <= 0 || port > 65535 {
+		return false
+	}
+	if host == "" {
+		host = localProxyHost
+	}
+	listener, err := net.ListenPacket("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
+}
+
+func LocalProxyPortAvailable(host string, port int) bool {
+	return TCPPortAvailable(host, port) && UDPPortAvailable(host, port)
+}
+
 func findAvailablePort(host string, start int, used, reusable map[int]bool, available func(string, int) bool) (int, error) {
 	if start <= 0 || start > 65535 {
 		return 0, fmt.Errorf("start port must be in 1..65535")
@@ -35,7 +54,7 @@ func findAvailablePort(host string, start int, used, reusable map[int]bool, avai
 		host = localProxyHost
 	}
 	if available == nil {
-		available = TCPPortAvailable
+		available = LocalProxyPortAvailable
 	}
 	for port := start; port <= 65535; port++ {
 		if used[port] {

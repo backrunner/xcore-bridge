@@ -1,8 +1,8 @@
 # xcore-bridge
 
-Add VLESS links to Surge for Mac as External Proxy policies.
+Add VLESS links to Surge for Mac as managed External Proxy policies.
 
-`xcore-bridge` is macOS-only. It automatically finds your Surge `.conf` profile, updates the `[Proxy]` section, and lets Surge start an embedded `xray-core` bridge on demand.
+`xcore-bridge` is macOS-only. It finds your Surge `.conf` profile, writes managed External Proxy policies, and lets Surge own the proxy process lifecycle. Each active managed policy runs one foreground `xcore-bridge` process with an embedded `xray-core` SOCKS5 inbound.
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ Remove a managed policy:
 xcore-bridge remove 'Example'
 ```
 
-Restart or reload Surge after the profile is updated, then select the new policies in Surge.
+Reload Surge after the profile is updated, then select the new policies in Surge.
 
 ## What It Does
 
@@ -48,8 +48,9 @@ Restart or reload Surge after the profile is updated, then select the new polici
 - Asks for confirmation the first time it edits a profile.
 - Creates one backup beside the profile: `profile.conf.bak`.
 - Keeps generated policies inside its managed block in `[Proxy]`.
-- Uses Surge External Proxy Program backed by a local xray-core SOCKS5 inbound with UDP relay enabled.
-- Chooses local ports automatically and avoids conflicts.
+- Uses Surge External Proxy Program so Surge starts and stops the bridge process.
+- Runs xray-core inside that process, exposes a local SOCKS5 inbound, and enables UDP relay.
+- Chooses local ports automatically and avoids TCP/UDP conflicts.
 
 If multiple profiles exist, `xcore-bridge` uses the first discovered profile and prints the exact path before editing. To choose manually:
 

@@ -2,6 +2,7 @@ package surge
 
 import (
 	"net"
+	"strconv"
 	"testing"
 )
 
@@ -47,4 +48,44 @@ func TestTCPPortAvailableDetectsOccupiedPort(t *testing.T) {
 	if TCPPortAvailable(localProxyHost, port) {
 		t.Fatalf("expected occupied port %d to be unavailable", port)
 	}
+}
+
+func TestLocalProxyPortAvailableDetectsOccupiedUDPPort(t *testing.T) {
+	port := freeLocalTCPPort(t)
+	listener, err := net.ListenPacket("udp", net.JoinHostPort(localProxyHost, strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	if LocalProxyPortAvailable(localProxyHost, port) {
+		t.Fatalf("expected UDP-occupied port %d to be unavailable", port)
+	}
+}
+
+func TestFindAvailablePortSkipsUDPUnavailablePort(t *testing.T) {
+	port := freeLocalTCPPort(t)
+	listener, err := net.ListenPacket("udp", net.JoinHostPort(localProxyHost, strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	got, err := FindAvailablePort(port, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == port {
+		t.Fatalf("expected UDP-occupied port %d to be skipped", port)
+	}
+}
+
+func freeLocalTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort(localProxyHost, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
 }

@@ -57,6 +57,51 @@ func TestStartFailsWhenLocalPortIsOccupied(t *testing.T) {
 	}
 }
 
+func TestStartFailsWhenUDPPortIsOccupied(t *testing.T) {
+	port := freeTCPPort(t)
+	listener, err := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	if _, err := Start(context.Background(), Config{
+		Node:      testNode(t),
+		LocalHost: "127.0.0.1",
+		LocalPort: port,
+	}); err == nil {
+		t.Fatal("expected occupied UDP port to fail startup")
+	}
+}
+
+func TestWaitForReadyRequiresSOCKSHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	defer func() {
+		_ = listener.Close()
+		<-done
+	}()
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := waitForReady(context.Background(), "127.0.0.1", port, 50*time.Millisecond); err == nil {
+		t.Fatal("expected non-SOCKS TCP listener to be rejected")
+	}
+}
+
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

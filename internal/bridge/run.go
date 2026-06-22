@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"time"
@@ -80,8 +81,11 @@ func waitForReady(ctx context.Context, host string, port int, timeout time.Durat
 		}
 		conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", address)
 		if err == nil {
+			if err := checkSOCKS5Ready(conn, dialTimeout); err == nil {
+				_ = conn.Close()
+				return nil
+			}
 			_ = conn.Close()
-			return nil
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -94,4 +98,24 @@ func waitForReady(ctx context.Context, host string, port int, timeout time.Durat
 		case <-timer.C:
 		}
 	}
+}
+
+func checkSOCKS5Ready(conn net.Conn, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 100 * time.Millisecond
+	}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return err
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		return err
+	}
+	if reply[0] != 0x05 || reply[1] != 0x00 {
+		return fmt.Errorf("unexpected SOCKS5 greeting response %x", reply)
+	}
+	return nil
 }

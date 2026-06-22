@@ -2,7 +2,9 @@
 
 ## Project Snapshot
 
-`xcore-bridge` is a macOS-only Go CLI for Surge for Mac. It embeds `xray-core` and generates Surge External Proxy entries that start `xcore-bridge run` on demand for VLESS links.
+`xcore-bridge` is a macOS-only Go CLI for Surge for Mac. It embeds `xray-core` and generates Surge External Proxy entries for VLESS links.
+
+Surge owns the managed proxy process lifecycle: a managed policy starts one foreground `xcore-bridge run` process, that process hosts the local xray-core SOCKS5 inbound, and it stays alive until Surge stops it. Do not replace the generated policies with plain SOCKS5 entries or move xray-core into an independent daemon without first re-evaluating Surge External Proxy DIRECT-routing semantics.
 
 The supported release artifacts are only:
 
@@ -19,7 +21,9 @@ Linux release binaries and Linux installers are intentionally unsupported becaus
 - Every actual profile write must create or replace exactly one adjacent backup at `profile.conf.bak`.
 - `add` and `remove` must only modify the managed block inside the `[Proxy]` section.
 - Generated Surge External Proxy policies must connect to the local xray-core SOCKS5 inbound and enable UDP relay.
-- Generated policies must avoid existing policy names, profile-used local ports, and currently occupied `127.0.0.1` TCP ports.
+- The external process must be long-lived per active managed policy; it must not exit after the first connection.
+- Startup readiness must verify a real SOCKS5 no-auth handshake, not only that the TCP port accepts connections.
+- Generated policies must avoid existing policy names, profile-used local ports, and currently occupied `127.0.0.1` TCP or UDP ports.
 - VLESS share links are sensitive because generated Surge profile lines contain the full link as process arguments.
 
 ## Development Standards
