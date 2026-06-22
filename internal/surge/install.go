@@ -27,11 +27,22 @@ type InstallOptions struct {
 	portAvailable func(string, int) bool
 }
 
+type RemoveOptions struct {
+	Names     []string
+	WriteFile bool
+}
+
 type InstallResult struct {
 	Profile     string
 	PolicyNames []string
 	LocalPorts  []int
 	BackupPath  string
+}
+
+type RemoveResult struct {
+	Profile      string
+	RemovedNames []string
+	BackupPath   string
 }
 
 type ProfileCandidate struct {
@@ -143,6 +154,63 @@ func ProfileHasManagedBlock(profilePath string) (bool, error) {
 }
 
 func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
+	return install(profilePath, opts, true)
+}
+
+func Add(profilePath string, opts InstallOptions) (InstallResult, error) {
+	return install(profilePath, opts, false)
+}
+
+func Remove(profilePath string, opts RemoveOptions) (RemoveResult, error) {
+	names := normalizedRemoveNames(opts.Names)
+	if len(names) == 0 {
+		return RemoveResult{}, fmt.Errorf("no policy names supplied")
+	}
+	original, err := os.ReadFile(profilePath)
+	if err != nil {
+		return RemoveResult{}, err
+	}
+	lines := strings.Split(string(original), "\n")
+	proxyStart, proxyEnd := sectionBounds(lines, "Proxy")
+	if proxyStart == -1 {
+		return RemoveResult{}, fmt.Errorf("%s has no [Proxy] section", profilePath)
+	}
+	managed, hasManaged := managedProxyBlock(lines, proxyStart, proxyEnd)
+	if !hasManaged {
+		return RemoveResult{}, fmt.Errorf("%s has no xcore-bridge managed proxy block", profilePath)
+	}
+	var removed []string
+	var nextManaged []string
+	for _, line := range managed {
+		name, ok := proxyLineName(line)
+		if ok && names[sanitizeName(name)] {
+			removed = append(removed, sanitizeName(name))
+			continue
+		}
+		nextManaged = append(nextManaged, line)
+	}
+	if len(removed) == 0 {
+		return RemoveResult{}, fmt.Errorf("no matching managed policies found")
+	}
+	if managedPolicyLineCount(nextManaged) == 0 {
+		nextManaged = nil
+	}
+	cleaned, proxyStart, proxyEnd := removeManagedProxyBlock(lines, proxyStart, proxyEnd)
+	rendered := renderManagedProxyBlock(cleaned, proxyStart, proxyEnd, nextManaged)
+	var backupPath string
+	if opts.WriteFile {
+		backupPath = profilePath + ".bak"
+		if err := atomicWriteFile(backupPath, original, fileMode(profilePath)); err != nil {
+			return RemoveResult{}, err
+		}
+		if err := atomicWriteFile(profilePath, []byte(rendered), fileMode(profilePath)); err != nil {
+			return RemoveResult{}, err
+		}
+	}
+	return RemoveResult{Profile: rendered, RemovedNames: removed, BackupPath: backupPath}, nil
+}
+
+func install(profilePath string, opts InstallOptions, replaceManaged bool) (InstallResult, error) {
 	if opts.BasePort == 0 {
 		opts.BasePort = 61080
 	}
@@ -168,15 +236,26 @@ func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
 	}
 
 	previousPorts := localPorts(lines[proxyStart+1 : proxyEnd])
-	cleaned, proxyStart, proxyEnd := removeManagedProxyBlock(lines, proxyStart, proxyEnd)
+	var existingManaged []string
+	var cleaned []string
+	if replaceManaged {
+		cleaned, proxyStart, proxyEnd = removeManagedProxyBlock(lines, proxyStart, proxyEnd)
+	} else {
+		existingManaged, _ = managedProxyBlock(lines, proxyStart, proxyEnd)
+		cleaned, proxyStart, proxyEnd = removeManagedProxyBlock(lines, proxyStart, proxyEnd)
+	}
 	if proxyStart == -1 {
 		return InstallResult{}, fmt.Errorf("%s has no [Proxy] section after cleanup", profilePath)
 	}
 	existingNames := proxyNames(cleaned[proxyStart+1 : proxyEnd])
+	existingNames = append(existingNames, proxyNames(existingManaged)...)
 	usedPorts := localPorts(cleaned[proxyStart+1 : proxyEnd])
+	for port := range localPorts(existingManaged) {
+		usedPorts[port] = true
+	}
 	reusablePorts := subtractPorts(previousPorts, usedPorts)
 
-	generated := []string{markerBegin}
+	generated := append([]string{}, existingManaged...)
 	names := make([]string, 0, len(opts.Nodes))
 	ports := make([]int, 0, len(opts.Nodes))
 	nextPort := opts.BasePort
@@ -203,24 +282,8 @@ func Install(profilePath string, opts InstallOptions) (InstallResult, error) {
 		names = append(names, name)
 		ports = append(ports, port)
 	}
-	generated = append(generated, markerEnd)
 
-	insertAt := proxyEnd
-	for insertAt > proxyStart+1 && strings.TrimSpace(cleaned[insertAt-1]) == "" {
-		insertAt--
-	}
-	block := append([]string{""}, generated...)
-	if insertAt < len(cleaned) {
-		if strings.TrimSpace(cleaned[insertAt]) != "" {
-			block = append(block, "")
-		}
-	}
-	nextLines := append(cleaned[:insertAt], append(block, cleaned[insertAt:]...)...)
-
-	rendered := strings.Join(nextLines, "\n")
-	if !strings.HasSuffix(rendered, "\n") {
-		rendered += "\n"
-	}
+	rendered := renderManagedProxyBlock(cleaned, proxyStart, proxyEnd, generated)
 	var backupPath string
 	if opts.WriteFile {
 		backupPath = profilePath + ".bak"
@@ -378,6 +441,71 @@ func removeManagedProxyBlock(lines []string, proxyStart, proxyEnd int) ([]string
 	return out, start, end
 }
 
+func managedProxyBlock(lines []string, proxyStart, proxyEnd int) ([]string, bool) {
+	for i := proxyStart + 1; i < proxyEnd; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == markerBegin {
+			if end := findMarkerEnd(lines, i+1, proxyEnd); end != -1 {
+				return proxyContentLines(lines[i+1 : end]), true
+			}
+			end := skipLegacyManagedLines(lines, i, proxyEnd)
+			return proxyContentLines(lines[i+1 : end+1]), true
+		}
+		if trimmed == legacyMarker {
+			end := skipLegacyManagedLines(lines, i, proxyEnd)
+			return proxyContentLines(lines[i+1 : end+1]), true
+		}
+	}
+	return nil, false
+}
+
+func proxyContentLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || trimmed == markerBegin || trimmed == markerEnd || trimmed == legacyMarker {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func managedPolicyLineCount(lines []string) int {
+	count := 0
+	for _, line := range lines {
+		if _, ok := proxyLineName(line); ok {
+			count++
+		}
+	}
+	return count
+}
+
+func renderManagedProxyBlock(lines []string, proxyStart, proxyEnd int, managed []string) string {
+	insertAt := proxyEnd
+	for insertAt > proxyStart+1 && strings.TrimSpace(lines[insertAt-1]) == "" {
+		insertAt--
+	}
+
+	var block []string
+	if len(managed) > 0 {
+		block = append(block, "")
+		block = append(block, markerBegin)
+		block = append(block, managed...)
+		block = append(block, markerEnd)
+	}
+	if len(block) > 0 && insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) != "" {
+		block = append(block, "")
+	}
+	nextLines := append(lines[:insertAt], append(block, lines[insertAt:]...)...)
+
+	rendered := strings.Join(nextLines, "\n")
+	if !strings.HasSuffix(rendered, "\n") {
+		rendered += "\n"
+	}
+	return rendered
+}
+
 func findMarkerEnd(lines []string, start, end int) int {
 	for i := start; i < end; i++ {
 		if strings.TrimSpace(lines[i]) == markerEnd {
@@ -409,6 +537,29 @@ func isLegacyManagedLine(line string) bool {
 	lower := strings.ToLower(line)
 	return strings.Contains(lower, "= external") &&
 		strings.Contains(lower, "local-port")
+}
+
+func normalizedRemoveNames(values []string) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range values {
+		if name := sanitizeName(value); name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func proxyLineName(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+		return "", false
+	}
+	left, _, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return "", false
+	}
+	name := sanitizeName(left)
+	return name, name != ""
 }
 
 func uniqueName(existing []string, raw string) string {

@@ -17,13 +17,13 @@ The installer shows each step inline. If `/usr/local/bin` needs administrator pe
 Add one VLESS link to Surge:
 
 ```sh
-xcore-bridge surge-install 'vless://UUID@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=PUBLIC_KEY&sid=0123abcd&type=tcp#Example'
+xcore-bridge add 'vless://UUID@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=PUBLIC_KEY&sid=0123abcd&type=tcp#Example'
 ```
 
 Add several links:
 
 ```sh
-xcore-bridge surge-install \
+xcore-bridge add \
   'vless://UUID@example.com:443?...#Example 1' \
   'vless://UUID@example.org:443?...#Example 2'
 ```
@@ -31,7 +31,13 @@ xcore-bridge surge-install \
 Or put one link per line in `links.txt`:
 
 ```sh
-xcore-bridge surge-install --links-file ./links.txt
+xcore-bridge add --links-file ./links.txt
+```
+
+Remove a managed policy:
+
+```sh
+xcore-bridge remove 'Example'
 ```
 
 Restart or reload Surge after the profile is updated, then select the new policies in Surge.
@@ -41,13 +47,14 @@ Restart or reload Surge after the profile is updated, then select the new polici
 - Finds Surge profiles in iCloud Drive first, then local Surge profiles.
 - Asks for confirmation the first time it edits a profile.
 - Creates one backup beside the profile: `profile.conf.bak`.
-- Replaces only its managed block inside `[Proxy]`.
+- Keeps generated policies inside its managed block in `[Proxy]`.
+- Uses Surge External Proxy Program backed by a local xray-core SOCKS5 inbound with UDP relay enabled.
 - Chooses local ports automatically and avoids conflicts.
 
 If multiple profiles exist, `xcore-bridge` uses the first discovered profile and prints the exact path before editing. To choose manually:
 
 ```sh
-xcore-bridge surge-install \
+xcore-bridge add \
   --profile "$HOME/Library/Application Support/Surge/Profiles/default.conf" \
   'vless://UUID@example.com:443?...#Example'
 ```
@@ -59,13 +66,13 @@ Generated Surge proxy lines contain the full VLESS share link. Treat your Surge 
 For non-interactive setup:
 
 ```sh
-xcore-bridge surge-install --yes 'vless://UUID@example.com:443?...#Example'
+xcore-bridge add --yes 'vless://UUID@example.com:443?...#Example'
 ```
 
 Preview without writing:
 
 ```sh
-xcore-bridge surge-install --dry-run 'vless://UUID@example.com:443?...#Example'
+xcore-bridge add --dry-run 'vless://UUID@example.com:443?...#Example'
 ```
 
 ## Development

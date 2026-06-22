@@ -43,10 +43,10 @@ func runWithIO(args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 		return runCommand(args[1:], stdout)
 	case "xray-config":
 		return xrayConfigCommand(args[1:], stdout)
-	case "surge-line":
-		return surgeLineCommand(args[1:], stdout)
-	case "surge-install":
-		return surgeInstallCommand(args[1:], stdout, stderr, stdin)
+	case "add":
+		return addCommand(args[1:], stdout, stderr, stdin)
+	case "remove":
+		return removeCommand(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return versionCommand(args[1:], stdout)
 	case "help", "--help", "-h":
@@ -135,85 +135,25 @@ func xrayConfigCommand(args []string, stdout io.Writer) error {
 	return err
 }
 
-func surgeLineCommand(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("surge-line", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	localPort := fs.Int("local-port", 0, "Surge External Proxy local-port")
-	name := fs.String("name", "", "Surge policy name")
-	execPath := fs.String("exec", defaultExecPath(), "path to xcore-bridge executable")
-	link := fs.String("link", "", "VLESS share link")
-	includeAddresses := fs.Bool("addresses", true, "include resolved IP addresses for Surge VIF exclusion")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	shareLink, err := oneLinkArg(*link, fs.Args(), "surge-line")
-	if err != nil {
-		return err
-	}
-	if shareLink == "" {
-		return errors.New("surge-line requires --link or a positional VLESS share link")
-	}
-	node, err := vless.Parse(shareLink)
-	if err != nil {
-		return err
-	}
-	port := *localPort
-	if port == 0 {
-		port, err = surge.FindAvailablePort(surge.StablePort(node), nil)
-		if err != nil {
-			return err
-		}
-	}
-	line, err := surge.ProxyLine(surge.ProxyLineOptions{
-		Node:             node,
-		Name:             *name,
-		ExecPath:         *execPath,
-		LocalPort:        port,
-		IncludeAddresses: *includeAddresses,
-	})
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(stdout, line)
-	return nil
-}
-
-func surgeInstallCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+func addCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	fs := flag.NewFlagSet("surge-install", flag.ContinueOnError)
+	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
 	linksFile := fs.String("links-file", "", "file with one VLESS share link per line")
 	execPath := fs.String("exec", defaultExecPath(), "path to xcore-bridge executable")
 	basePort := fs.Int("base-port", 61080, "first local port to assign")
-	backup := fs.Bool("backup", true, "deprecated; surge-install always writes one .bak backup")
 	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
 	yes := fs.Bool("yes", false, "confirm first-time profile changes without prompting")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if !*backup {
-		return errors.New("surge-install always writes a single .bak backup; --backup=false is no longer supported")
-	}
 
-	profilePath := strings.TrimSpace(*profile)
-	if profilePath == "" {
-		candidates, err := surge.DiscoverProfiles()
-		if err != nil {
-			return err
-		}
-		if len(candidates) == 0 {
-			return errors.New("surge-install could not find a Surge profile in iCloud Drive; pass --profile to choose one explicitly")
-		}
-		selected := candidates[0]
-		profilePath = selected.Path
-		if len(candidates) == 1 {
-			fmt.Fprintf(stderr, "xcore-bridge: found Surge profile %s (%s)\n", profilePath, selected.Source)
-		} else {
-			fmt.Fprintf(stderr, "xcore-bridge: found %d Surge profiles; using %s (%s)\n", len(candidates), profilePath, selected.Source)
-		}
+	profilePath, err := selectedProfilePath(*profile, stderr, "add")
+	if err != nil {
+		return err
 	}
 
 	links := fs.Args()
@@ -225,7 +165,7 @@ func surgeInstallCommand(args []string, stdout, stderr io.Writer, stdin io.Reade
 		links = append(links, fileLinks...)
 	}
 	if len(links) == 0 {
-		return errors.New("surge-install requires at least one VLESS share link or --links-file")
+		return errors.New("add requires at least one VLESS share link or --links-file")
 	}
 
 	var nodes []vless.Node
@@ -251,7 +191,7 @@ func surgeInstallCommand(args []string, stdout, stderr io.Writer, stdin io.Reade
 		}
 	}
 
-	updated, err := surge.Install(profilePath, surge.InstallOptions{
+	updated, err := surge.Add(profilePath, surge.InstallOptions{
 		Nodes:     nodes,
 		ExecPath:  *execPath,
 		BasePort:  *basePort,
@@ -264,12 +204,53 @@ func surgeInstallCommand(args []string, stdout, stderr io.Writer, stdin io.Reade
 		fmt.Fprint(stdout, updated.Profile)
 		return nil
 	}
-	fmt.Fprintf(stdout, "installed %d external proxy policies into %s\n", len(updated.PolicyNames), profilePath)
+	fmt.Fprintf(stdout, "added %d external proxy policies into %s\n", len(updated.PolicyNames), profilePath)
 	if updated.BackupPath != "" {
 		fmt.Fprintf(stdout, "backup: %s\n", updated.BackupPath)
 	}
 	for i, name := range updated.PolicyNames {
 		fmt.Fprintf(stdout, "%s local-port=%d\n", name, updated.LocalPorts[i])
+	}
+	return nil
+}
+
+func removeCommand(args []string, stdout, stderr io.Writer) error {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
+	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	names := fs.Args()
+	if len(names) == 0 {
+		return errors.New("remove requires at least one managed policy name")
+	}
+
+	profilePath, err := selectedProfilePath(*profile, stderr, "remove")
+	if err != nil {
+		return err
+	}
+	updated, err := surge.Remove(profilePath, surge.RemoveOptions{
+		Names:     names,
+		WriteFile: !*dryRun,
+	})
+	if err != nil {
+		return err
+	}
+	if *dryRun {
+		fmt.Fprint(stdout, updated.Profile)
+		return nil
+	}
+	fmt.Fprintf(stdout, "removed %d external proxy policies from %s\n", len(updated.RemovedNames), profilePath)
+	if updated.BackupPath != "" {
+		fmt.Fprintf(stdout, "backup: %s\n", updated.BackupPath)
+	}
+	for _, name := range updated.RemovedNames {
+		fmt.Fprintf(stdout, "%s\n", name)
 	}
 	return nil
 }
@@ -355,6 +336,28 @@ func readLinksFile(path string) ([]string, error) {
 	return links, nil
 }
 
+func selectedProfilePath(raw string, stderr io.Writer, command string) (string, error) {
+	profilePath := strings.TrimSpace(raw)
+	if profilePath != "" {
+		return profilePath, nil
+	}
+	candidates, err := surge.DiscoverProfiles()
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("%s could not find a Surge profile in iCloud Drive or local Surge profiles; pass --profile to choose one explicitly", command)
+	}
+	selected := candidates[0]
+	profilePath = selected.Path
+	if len(candidates) == 1 {
+		fmt.Fprintf(stderr, "xcore-bridge: found Surge profile %s (%s)\n", profilePath, selected.Source)
+	} else {
+		fmt.Fprintf(stderr, "xcore-bridge: found %d Surge profiles; using %s (%s)\n", len(candidates), profilePath, selected.Source)
+	}
+	return profilePath, nil
+}
+
 func confirmFirstProfileChange(stdin io.Reader, stderr io.Writer, profilePath string) (bool, error) {
 	if stdin == nil {
 		return false, nil
@@ -380,14 +383,14 @@ func printUsage(w io.Writer) {
 
 Usage:
   xcore-bridge run --local-port 61080 --link 'vless://...'
-  xcore-bridge surge-line --link 'vless://...'
-  xcore-bridge surge-install --links-file links.txt
+  xcore-bridge add 'vless://...'
+  xcore-bridge remove 'Policy Name'
   xcore-bridge xray-config --local-port 61080 --link 'vless://...'
 
 Commands:
   run            start one local SOCKS5 inbound and forward everything to the VLESS node
-  surge-line     print a Surge [Proxy] external policy line
-  surge-install  inject generated external policies into a Surge profile
+  add            add VLESS links as managed Surge External Proxy policies
+  remove         remove managed Surge External Proxy policies by name
   xray-config    print the generated xray-core JSON config
   version        print version
 `)

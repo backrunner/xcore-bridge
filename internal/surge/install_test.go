@@ -107,6 +107,106 @@ Group = select, Demo
 	if !strings.Contains(result.Profile, "Demo = direct") {
 		t.Fatalf("existing proxy was removed:\n%s", result.Profile)
 	}
+	assertManagedProxyOrder(t, result.Profile, "Demo 2 = external")
+}
+
+func TestAddAppendsInsideExistingManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+First = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Add(profile, InstallOptions{
+		Nodes:     []vless.Node{testSurgeNode(t, "Second")},
+		ExecPath:  "/opt/homebrew/bin/xcore-bridge",
+		BasePort:  61080,
+		WriteFile: false,
+		portAvailable: func(_ string, _ int) bool {
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(result.Profile, markerBegin) != 1 || strings.Count(result.Profile, markerEnd) != 1 {
+		t.Fatalf("expected a single managed block:\n%s", result.Profile)
+	}
+	for _, want := range []string{"First = external", "Second = external"} {
+		assertManagedProxyOrder(t, result.Profile, want)
+	}
+	if !strings.Contains(result.Profile, "Manual = ss") {
+		t.Fatalf("manual proxy was removed:\n%s", result.Profile)
+	}
+	if got := result.LocalPorts[0]; got != 61081 {
+		t.Fatalf("expected new add to avoid existing managed port, got %d", got)
+	}
+}
+
+func TestRemovePreservesOtherManagedPolicies(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+First = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+Second = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61081
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Remove(profile, RemoveOptions{
+		Names:     []string{"First"},
+		WriteFile: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.Profile, "First = external") {
+		t.Fatalf("removed policy still exists:\n%s", result.Profile)
+	}
+	assertManagedProxyOrder(t, result.Profile, "Second = external")
+	if !strings.Contains(result.Profile, "Manual = ss") {
+		t.Fatalf("manual proxy was removed:\n%s", result.Profile)
+	}
+}
+
+func TestRemoveDropsEmptyManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+Only = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Remove(profile, RemoveOptions{
+		Names:     []string{"Only"},
+		WriteFile: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{markerBegin, markerEnd, "Only = external"} {
+		if strings.Contains(result.Profile, gone) {
+			t.Fatalf("expected %q to be removed:\n%s", gone, result.Profile)
+		}
+	}
+	if !strings.Contains(result.Profile, "Manual = ss") {
+		t.Fatalf("manual proxy was removed:\n%s", result.Profile)
+	}
 }
 
 func TestInstallSkipsLocallyOccupiedPorts(t *testing.T) {
@@ -546,4 +646,14 @@ func listenOnTestPort(t *testing.T) (net.Listener, int) {
 	}
 	t.Skip("no available local test port below 65535")
 	return nil, 0
+}
+
+func assertManagedProxyOrder(t *testing.T, profile, proxyLine string) {
+	t.Helper()
+	begin := strings.Index(profile, markerBegin)
+	line := strings.Index(profile, proxyLine)
+	end := strings.Index(profile, markerEnd)
+	if begin == -1 || line == -1 || end == -1 || !(begin < line && line < end) {
+		t.Fatalf("%q was not inside the managed block:\n%s", proxyLine, profile)
+	}
 }

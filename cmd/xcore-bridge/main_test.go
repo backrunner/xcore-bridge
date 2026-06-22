@@ -2,22 +2,22 @@ package main
 
 import (
 	"bytes"
-	"fmt"
-	"net"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-func TestSurgeLineUsesExecutablePathByDefault(t *testing.T) {
+func TestAddDryRunUsesDefaultExecutableAndManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	links := writeLinksFile(t, dir)
+
 	var stdout bytes.Buffer
-	err := run([]string{
-		"surge-line",
-		"--link", "vless://00000000-0000-0000-0000-000000000000@203.0.113.10:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#Demo",
-	}, &stdout, &bytes.Buffer{})
+	err := run([]string{"add", "--dry-run", "--profile", profile, "--links-file", links}, &stdout, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,9 +25,17 @@ func TestSurgeLineUsesExecutablePathByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), `exec = "`+exe+`"`) {
-		t.Fatalf("expected default exec path %q in output:\n%s", exe, stdout.String())
+	output := stdout.String()
+	for _, want := range []string{
+		"Demo = external",
+		`exec = "` + exe + `"`,
+		"udp-relay = true",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output:\n%s", want, output)
+		}
 	}
+	assertInsideManagedBlock(t, output, "Demo = external")
 }
 
 func TestVersionVerboseIncludesXrayCoreVersion(t *testing.T) {
@@ -55,43 +63,27 @@ func TestRunRejectsBothLinkForms(t *testing.T) {
 	}
 }
 
-func TestSurgeLineSkipsOccupiedStablePort(t *testing.T) {
-	link := "vless://00000000-0000-0000-0000-000000000000@203.0.113.10:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#Demo"
-	var probe bytes.Buffer
-	err := run([]string{"surge-line", "--link", link}, &probe, &bytes.Buffer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stablePort := extractLocalPort(t, probe.String())
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", stablePort))
-	if err != nil {
-		t.Skipf("stable port %d is not available for test: %v", stablePort, err)
-	}
-	defer listener.Close()
-
-	var stdout bytes.Buffer
-	err = run([]string{"surge-line", "--link", link}, &stdout, &bytes.Buffer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := extractLocalPort(t, stdout.String()); got == stablePort {
-		t.Fatalf("expected occupied stable port %d to be skipped, output:\n%s", stablePort, stdout.String())
+func TestOldSurgeCommandsAreRemoved(t *testing.T) {
+	for _, command := range []string{"surge-line", "surge-install"} {
+		if err := run([]string{command}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+			t.Fatalf("expected old command %q to be removed", command)
+		}
 	}
 }
 
-func TestSurgeInstallLinksFileAcceptsUppercaseScheme(t *testing.T) {
+func TestAddLinksFileAcceptsUppercaseScheme(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
 	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	links := filepath.Join(dir, "links.txt")
-	if err := os.WriteFile(links, []byte("VLESS://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#Demo\n"), 0o644); err != nil {
+	if err := os.WriteFile(links, []byte(testLink("Demo")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	var stdout bytes.Buffer
-	err := run([]string{"surge-install", "--dry-run", "--profile", profile, "--links-file", links}, &stdout, &bytes.Buffer{})
+	err := run([]string{"add", "--dry-run", "--profile", profile, "--links-file", links}, &stdout, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +92,7 @@ func TestSurgeInstallLinksFileAcceptsUppercaseScheme(t *testing.T) {
 	}
 }
 
-func TestSurgeInstallAutoDiscoversICloudProfileAndConfirmsFirstWrite(t *testing.T) {
+func TestAddAutoDiscoversICloudProfileAndConfirmsFirstWrite(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, "Library", "Mobile Documents", "iCloud~com~nssurge~Inc~Surge", "Documents", "Profiles")
@@ -114,17 +106,17 @@ func TestSurgeInstallAutoDiscoversICloudProfileAndConfirmsFirstWrite(t *testing.
 
 	var stdout, stderr bytes.Buffer
 	err := runWithIO([]string{
-		"surge-install",
+		"add",
 		"--links-file", writeLinksFile(t, home),
 	}, &stdout, &stderr, strings.NewReader("y\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "installed 1 external proxy policies into "+profile) {
-		t.Fatalf("unexpected install output:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), "added 1 external proxy policies into "+profile) {
+		t.Fatalf("unexpected add output:\n%s", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "backup: "+profile+".bak") {
-		t.Fatalf("install output should mention backup:\n%s", stdout.String())
+		t.Fatalf("add output should mention backup:\n%s", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "using "+profile) && !strings.Contains(stderr.String(), "found Surge profile "+profile) {
 		t.Fatalf("expected discovery notice, got:\n%s", stderr.String())
@@ -136,9 +128,10 @@ func TestSurgeInstallAutoDiscoversICloudProfileAndConfirmsFirstWrite(t *testing.
 	if !strings.Contains(string(updated), "Demo = external") {
 		t.Fatalf("profile was not updated:\n%s", updated)
 	}
+	assertInsideManagedBlock(t, string(updated), "Demo = external")
 }
 
-func TestSurgeInstallRequiresConfirmationForFirstWrite(t *testing.T) {
+func TestAddRequiresConfirmationForFirstWrite(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
 	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
@@ -147,7 +140,7 @@ func TestSurgeInstallRequiresConfirmationForFirstWrite(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runWithIO([]string{
-		"surge-install",
+		"add",
 		"--profile", profile,
 		"--links-file", writeLinksFile(t, dir),
 	}, &stdout, &stderr, strings.NewReader("n\n"))
@@ -169,7 +162,7 @@ func TestSurgeInstallRequiresConfirmationForFirstWrite(t *testing.T) {
 	}
 }
 
-func TestSurgeInstallYesSkipsFirstWritePrompt(t *testing.T) {
+func TestAddYesSkipsFirstWritePrompt(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
 	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
@@ -178,7 +171,7 @@ func TestSurgeInstallYesSkipsFirstWritePrompt(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runWithIO([]string{
-		"surge-install",
+		"add",
 		"--yes",
 		"--profile", profile,
 		"--links-file", writeLinksFile(t, dir),
@@ -189,49 +182,77 @@ func TestSurgeInstallYesSkipsFirstWritePrompt(t *testing.T) {
 	if strings.Contains(stderr.String(), "Continue?") {
 		t.Fatalf("did not expect confirmation prompt:\n%s", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "installed 1 external proxy policies") {
+	if !strings.Contains(stdout.String(), "added 1 external proxy policies") {
 		t.Fatalf("unexpected output:\n%s", stdout.String())
 	}
 }
 
-func TestSurgeInstallRejectsBackupFalse(t *testing.T) {
+func TestRemoveDeletesManagedPolicyAndBackup(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
-	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := runWithIO([]string{
-		"surge-install",
-		"--backup=false",
-		"--profile", profile,
-		"--links-file", writeLinksFile(t, dir),
-	}, &bytes.Buffer{}, &bytes.Buffer{}, strings.NewReader("y\n"))
-	if err == nil {
-		t.Fatal("expected --backup=false to be rejected")
+
+	var stdout bytes.Buffer
+	err := runWithIO([]string{"remove", "--profile", profile, "Demo"}, &stdout, &bytes.Buffer{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "removed 1 external proxy policies from "+profile) {
+		t.Fatalf("unexpected remove output:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "backup: "+profile+".bak") {
+		t.Fatalf("remove output should mention backup:\n%s", stdout.String())
+	}
+	updatedBytes, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := string(updatedBytes)
+	for _, gone := range []string{"Demo = external", "# xcore-bridge managed external proxies begin", "# xcore-bridge managed external proxies end"} {
+		if strings.Contains(updated, gone) {
+			t.Fatalf("expected %q to be removed:\n%s", gone, updated)
+		}
+	}
+	if !strings.Contains(updated, "Manual = ss") {
+		t.Fatalf("manual proxy was removed:\n%s", updated)
+	}
+	backup, err := os.ReadFile(profile + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != initial {
+		t.Fatalf("backup should contain original profile:\n%s", backup)
 	}
 }
-
-var localPortLinePattern = regexp.MustCompile(`local-port = ([0-9]+)`)
 
 func writeLinksFile(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "links.txt")
-	data := "VLESS://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#Demo\n"
-	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(testLink("Demo")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-func extractLocalPort(t *testing.T, line string) int {
+func testLink(name string) string {
+	return "VLESS://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#" + name
+}
+
+func assertInsideManagedBlock(t *testing.T, profile, needle string) {
 	t.Helper()
-	matches := localPortLinePattern.FindStringSubmatch(line)
-	if len(matches) != 2 {
-		t.Fatalf("missing local-port in line:\n%s", line)
+	begin := strings.Index(profile, "# xcore-bridge managed external proxies begin")
+	line := strings.Index(profile, needle)
+	end := strings.Index(profile, "# xcore-bridge managed external proxies end")
+	if begin == -1 || line == -1 || end == -1 || !(begin < line && line < end) {
+		t.Fatalf("%q was not inside the managed block:\n%s", needle, profile)
 	}
-	port, err := strconv.Atoi(matches[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return port
 }

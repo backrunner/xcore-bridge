@@ -52,6 +52,7 @@ func ProxyLine(opts ProxyLineOptions) (string, error) {
 		fields = append(fields, "args = "+quote(arg))
 	}
 	fields = append(fields, fmt.Sprintf("local-port = %d", opts.LocalPort))
+	fields = append(fields, "udp-relay = true")
 	if opts.IncludeAddresses {
 		if ip := net.ParseIP(opts.Node.Host); ip != nil {
 			fields = append(fields, "addresses = "+ip.String())

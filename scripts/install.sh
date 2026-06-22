@@ -263,6 +263,6 @@ Installed xcore-bridge $installed_version
 Path: $bindir/xcore-bridge
 
 Next:
-  xcore-bridge surge-install 'vless://...'
+  xcore-bridge add 'vless://...'
 
 EOF

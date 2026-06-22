@@ -13,11 +13,12 @@ Linux release binaries and Linux installers are intentionally unsupported becaus
 
 ## User-Facing Behavior
 
-- `surge-install` can run without `--profile`.
+- `add` can run without `--profile`; `remove` accepts managed policy names to delete.
 - When no profile is supplied, it discovers Surge `.conf` files from iCloud Drive first, then local Surge profiles.
 - The first write to a profile requires user confirmation unless `--yes` is passed.
 - Every actual profile write must create or replace exactly one adjacent backup at `profile.conf.bak`.
-- `surge-install` must only modify the managed block inside the `[Proxy]` section.
+- `add` and `remove` must only modify the managed block inside the `[Proxy]` section.
+- Generated Surge External Proxy policies must connect to the local xray-core SOCKS5 inbound and enable UDP relay.
 - Generated policies must avoid existing policy names, profile-used local ports, and currently occupied `127.0.0.1` TCP ports.
 - VLESS share links are sensitive because generated Surge profile lines contain the full link as process arguments.
 

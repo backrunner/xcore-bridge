@@ -23,6 +23,7 @@ func TestProxyLine(t *testing.T) {
 		"args = \"--local-port\"",
 		"args = \"61080\"",
 		"local-port = 61080",
+		"udp-relay = true",
 		"addresses = 203.0.113.10",
 	} {
 		if !strings.Contains(line, want) {
