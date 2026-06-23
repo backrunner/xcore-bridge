@@ -23,6 +23,7 @@ func runCommand(args []string, stdout, stderr io.Writer) error {
 	if stderr == nil {
 		stderr = io.Discard
 	}
+	_ = daemon.AppendBridgeLog("run invoked args=%d", len(args))
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	profile := fs.String("profile", "", "Surge profile path; auto-detected when omitted")
@@ -31,28 +32,36 @@ func runCommand(args []string, stdout, stderr io.Writer) error {
 	link := fs.String("link", "", "VLESS share link")
 	logLevel := fs.String("log-level", "warning", "Xray log level")
 	if err := fs.Parse(args); err != nil {
+		_ = daemon.AppendBridgeLog("run flag parse failed error=%q", err)
 		return err
 	}
 	shareLink, err := oneLinkArg(*link, fs.Args(), "run")
 	if err != nil {
+		_ = daemon.AppendBridgeLog("run link argument failed error=%q", err)
 		return err
 	}
 	if shareLink == "" {
+		_ = daemon.AppendBridgeLog("run missing link")
 		return errors.New("run requires --link or a positional VLESS share link")
 	}
 	if *localPort <= 0 || *localPort > 65535 {
+		_ = daemon.AppendBridgeLog("run invalid local port port=%d", *localPort)
 		return errors.New("run requires --local-port in 1..65535")
 	}
 
 	node, err := vless.Parse(shareLink)
 	if err != nil {
+		_ = daemon.AppendBridgeLog("run parse link failed port=%d error=%q", *localPort, err)
 		return err
 	}
+	_ = daemon.AppendBridgeLog("run starting policy=%q socks=%s:%d", node.DisplayName(), *localHost, *localPort)
 	profilePath, err := selectedProfilePath(*profile, stderr, "run")
 	if err != nil {
+		_ = daemon.AppendBridgeLog("run profile selection failed policy=%q error=%q", node.DisplayName(), err)
 		return err
 	}
 	if err := verifyManagedRunTarget(profilePath, shareLink, *localHost, *localPort); err != nil {
+		_ = daemon.AppendBridgeLog("run target verification failed policy=%q profile=%q socks=%s:%d error=%q", node.DisplayName(), profilePath, *localHost, *localPort, err)
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -63,17 +72,21 @@ func runCommand(args []string, stdout, stderr io.Writer) error {
 		Timeout:     5 * time.Second,
 	})
 	if err != nil {
+		_ = daemon.AppendBridgeLog("run daemon ensure failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, err)
 		return err
 	}
 	if err := daemon.WaitForPolicy(ctx, *localHost, *localPort, 5*time.Second); err != nil {
+		_ = daemon.AppendBridgeLog("run policy readiness failed policy=%q profile=%q socks=%s:%d error=%q", node.DisplayName(), profilePath, *localHost, *localPort, err)
 		return err
 	}
+	_ = daemon.AppendBridgeLog("run ready policy=%q profile=%q socks=%s:%d daemonPid=%d", node.DisplayName(), profilePath, *localHost, *localPort, status.PID)
 	ui := newUI(stdout)
 	ui.Success("xcore-bridge ready")
 	ui.KeyValue("policy", node.DisplayName())
 	ui.KeyValue("socks5", fmt.Sprintf("%s:%d", *localHost, *localPort))
 	ui.KeyValue("daemon", fmt.Sprintf("pid=%d", status.PID))
 	<-ctx.Done()
+	_ = daemon.AppendBridgeLog("run stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
 	return nil
 }
 
@@ -148,7 +161,7 @@ func statusCommand(args []string, stdout, stderr io.Writer) error {
 
 func daemonCommand(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("daemon requires start, stop, restart, status, or serve")
+		return errors.New("daemon requires start, stop, restart, status, log, or serve")
 	}
 	switch args[0] {
 	case "start":
@@ -159,6 +172,8 @@ func daemonCommand(args []string, stdout, stderr io.Writer) error {
 		return daemonRestartCommand(args[1:], stdout, stderr)
 	case "status":
 		return statusCommand(args[1:], stdout, stderr)
+	case "log":
+		return daemonLogCommand(args[1:], stdout, stderr)
 	case "serve":
 		return daemonServeCommand(args[1:])
 	default:

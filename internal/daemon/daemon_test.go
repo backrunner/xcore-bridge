@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestConfigFromProfileUsesManagedPolicies(t *testing.T) {
@@ -50,6 +53,52 @@ func TestSamePoliciesDetectsProfileChanges(t *testing.T) {
 	}
 	if samePolicies(current, append(current, Policy{Name: "Second", LocalHost: "127.0.0.1", LocalPort: 61081})) {
 		t.Fatal("expected added policy to compare different")
+	}
+}
+
+func TestControlLockSerializesDaemonOperations(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	paths, err := Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(paths.Lock, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+
+	acquired := make(chan struct{})
+	errs := make(chan error, 1)
+	go func() {
+		_, err := withControlLock(context.Background(), Options{Timeout: time.Second}, func() (Status, error) {
+			close(acquired)
+			return Status{}, nil
+		})
+		errs <- err
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("lock was acquired while another process held it")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("lock was not acquired after release")
+	}
+	if err := <-errs; err != nil {
+		t.Fatal(err)
 	}
 }
 

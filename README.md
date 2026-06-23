@@ -83,6 +83,17 @@ xcore-bridge daemon stop
 xcore-bridge daemon restart
 ```
 
+Inspect logs when Surge or the daemon fails to connect:
+
+```sh
+xcore-bridge log
+xcore-bridge log --follow
+xcore-bridge daemon log
+xcore-bridge daemon log --follow
+```
+
+`xcore-bridge log` shows the bridge/supervisor processes that Surge starts. `xcore-bridge daemon log` shows daemon and xray-core startup output.
+
 Reload Surge after the profile is updated, then select the new policies in Surge.
 
 ## What It Does

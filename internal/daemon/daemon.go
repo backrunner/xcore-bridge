@@ -22,10 +22,12 @@ import (
 const defaultLogLevel = "warning"
 
 type RuntimePaths struct {
-	Dir   string
-	PID   string
-	State string
-	Log   string
+	Dir       string
+	PID       string
+	State     string
+	Log       string
+	BridgeLog string
+	Lock      string
 }
 
 type Options struct {
@@ -58,6 +60,19 @@ type stateFile struct {
 }
 
 func Start(ctx context.Context, opts Options) (Status, error) {
+	_ = AppendBridgeLog("start requested profile=%q", opts.ProfilePath)
+	return withControlLock(ctx, opts, func() (Status, error) {
+		status, err := startLocked(ctx, opts)
+		if err != nil {
+			_ = AppendBridgeLog("start failed profile=%q error=%q", opts.ProfilePath, err)
+			return status, err
+		}
+		_ = AppendBridgeLog("start ready profile=%q pid=%d", status.ProfilePath, status.PID)
+		return status, nil
+	})
+}
+
+func startLocked(ctx context.Context, opts Options) (Status, error) {
 	if err := validateProfile(opts.ProfilePath); err != nil {
 		return Status{}, err
 	}
@@ -72,25 +87,36 @@ func Start(ctx context.Context, opts Options) (Status, error) {
 }
 
 func Serve(ctx context.Context, opts Options) error {
+	_ = AppendDaemonLog("serve starting profile=%q logLevel=%q", opts.ProfilePath, opts.LogLevel)
 	if err := validateProfile(opts.ProfilePath); err != nil {
+		_ = AppendDaemonLog("serve profile validation failed profile=%q error=%q", opts.ProfilePath, err)
 		return err
 	}
 	paths, err := Paths()
 	if err != nil {
+		_ = AppendDaemonLog("serve paths failed error=%q", err)
 		return err
 	}
 	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		_ = AppendDaemonLog("serve mkdir failed dir=%q error=%q", paths.Dir, err)
 		return err
 	}
 	cfg, policies, err := ConfigFromProfile(opts.ProfilePath, opts.LogLevel)
 	if err != nil {
+		_ = AppendDaemonLog("serve config failed profile=%q error=%q", opts.ProfilePath, err)
 		return err
 	}
+	_ = AppendDaemonLog("serve config loaded profile=%q policies=%d", opts.ProfilePath, len(policies))
 	server, err := bridge.StartMulti(ctx, cfg)
 	if err != nil {
+		_ = AppendDaemonLog("serve xray start failed profile=%q error=%q", opts.ProfilePath, err)
 		return err
 	}
-	defer server.Close()
+	defer func() {
+		if err := server.Close(); err != nil {
+			_ = AppendDaemonLog("serve xray close failed error=%q", err)
+		}
+	}()
 	state := stateFile{
 		PID:         os.Getpid(),
 		ProfilePath: opts.ProfilePath,
@@ -98,14 +124,36 @@ func Serve(ctx context.Context, opts Options) error {
 		Policies:    policies,
 	}
 	if err := writeState(paths, state); err != nil {
+		_ = AppendDaemonLog("serve state write failed profile=%q error=%q", opts.ProfilePath, err)
 		return err
 	}
+	_ = AppendDaemonLog("serve ready profile=%q pid=%d policies=%d", opts.ProfilePath, os.Getpid(), len(policies))
 	defer cleanupState(paths, os.Getpid())
 	<-ctx.Done()
+	_ = AppendDaemonLog("serve stopping profile=%q pid=%d reason=%q", opts.ProfilePath, os.Getpid(), ctx.Err())
 	return nil
 }
 
 func Stop(opts Options) (Status, error) {
+	_ = AppendBridgeLog("stop requested profile=%q", opts.ProfilePath)
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 3 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+time.Second)
+	defer cancel()
+	return withControlLock(ctx, opts, func() (Status, error) {
+		status, err := stopLocked(opts)
+		if err != nil {
+			_ = AppendBridgeLog("stop failed profile=%q pid=%d error=%q", opts.ProfilePath, status.PID, err)
+			return status, err
+		}
+		_ = AppendBridgeLog("stop complete profile=%q pid=%d running=%t", status.ProfilePath, status.PID, status.Running)
+		return status, nil
+	})
+}
+
+func stopLocked(opts Options) (Status, error) {
 	status, err := GetStatus(opts)
 	if err != nil {
 		return status, err
@@ -140,19 +188,44 @@ func Stop(opts Options) (Status, error) {
 }
 
 func Restart(ctx context.Context, opts Options) (Status, error) {
-	if _, err := Stop(opts); err != nil {
-		return Status{}, err
-	}
-	return Start(ctx, opts)
+	_ = AppendBridgeLog("restart requested profile=%q", opts.ProfilePath)
+	return withControlLock(ctx, opts, func() (Status, error) {
+		if _, err := stopLocked(opts); err != nil {
+			_ = AppendBridgeLog("restart stop failed profile=%q error=%q", opts.ProfilePath, err)
+			return Status{}, err
+		}
+		status, err := startLocked(ctx, opts)
+		if err != nil {
+			_ = AppendBridgeLog("restart start failed profile=%q error=%q", opts.ProfilePath, err)
+			return status, err
+		}
+		_ = AppendBridgeLog("restart ready profile=%q pid=%d", status.ProfilePath, status.PID)
+		return status, nil
+	})
 }
 
 func Ensure(ctx context.Context, opts Options) (Status, error) {
+	_ = AppendBridgeLog("ensure requested profile=%q", opts.ProfilePath)
+	return withControlLock(ctx, opts, func() (Status, error) {
+		status, err := ensureLocked(ctx, opts)
+		if err != nil {
+			_ = AppendBridgeLog("ensure failed profile=%q pid=%d error=%q", opts.ProfilePath, status.PID, err)
+			return status, err
+		}
+		_ = AppendBridgeLog("ensure ready profile=%q pid=%d policies=%d", status.ProfilePath, status.PID, len(status.Policies))
+		return status, nil
+	})
+}
+
+func ensureLocked(ctx context.Context, opts Options) (Status, error) {
 	status, _ := GetStatus(opts)
 	if status.Running && policyReady(ctx, status, opts) {
+		_ = AppendBridgeLog("ensure reused daemon profile=%q pid=%d", status.ProfilePath, status.PID)
 		return status, nil
 	}
 	if status.Running {
-		if _, err := Stop(opts); err != nil {
+		_ = AppendBridgeLog("ensure restarting daemon profile=%q pid=%d", status.ProfilePath, status.PID)
+		if _, err := stopLocked(opts); err != nil {
 			return status, err
 		}
 	}
@@ -193,11 +266,14 @@ func startFresh(ctx context.Context, opts Options) (Status, error) {
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		_ = AppendBridgeLog("daemon child start failed profile=%q exec=%q error=%q", opts.ProfilePath, execPath, err)
 		return Status{}, err
 	}
+	_ = AppendBridgeLog("daemon child started profile=%q exec=%q pid=%d", opts.ProfilePath, execPath, cmd.Process.Pid)
 	released := false
 	defer func() {
 		if !released {
+			_ = AppendBridgeLog("daemon child cleanup profile=%q pid=%d", opts.ProfilePath, cmd.Process.Pid)
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			_ = cmd.Process.Release()
 		}
@@ -215,6 +291,7 @@ func startFresh(ctx context.Context, opts Options) (Status, error) {
 			if ready(ctx, current.Policies, 100*time.Millisecond) {
 				_ = cmd.Process.Release()
 				released = true
+				_ = AppendBridgeLog("daemon child ready profile=%q pid=%d policies=%d", current.ProfilePath, current.PID, len(current.Policies))
 				return current, nil
 			}
 		}
@@ -301,11 +378,62 @@ func Paths() (RuntimePaths, error) {
 	}
 	dir := filepath.Join(base, "xcore-bridge")
 	return RuntimePaths{
-		Dir:   dir,
-		PID:   filepath.Join(dir, "daemon.pid"),
-		State: filepath.Join(dir, "daemon.json"),
-		Log:   filepath.Join(dir, "daemon.log"),
+		Dir:       dir,
+		PID:       filepath.Join(dir, "daemon.pid"),
+		State:     filepath.Join(dir, "daemon.json"),
+		Log:       filepath.Join(dir, "daemon.log"),
+		BridgeLog: filepath.Join(dir, "bridge.log"),
+		Lock:      filepath.Join(dir, "daemon.lock"),
 	}, nil
+}
+
+func withControlLock(ctx context.Context, opts Options, fn func() (Status, error)) (Status, error) {
+	paths, err := Paths()
+	if err != nil {
+		return Status{}, err
+	}
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		return Status{}, err
+	}
+	file, err := os.OpenFile(paths.Lock, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return Status{}, err
+	}
+	defer file.Close()
+
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	if err := acquireLock(ctx, file, timeout); err != nil {
+		_ = AppendBridgeLog("control lock failed path=%q error=%q", paths.Lock, err)
+		return Status{}, err
+	}
+	defer func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	}()
+	return fn()
+}
+
+func acquireLock(ctx context.Context, file *os.File, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("daemon control lock did not become available within %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 func policyReady(ctx context.Context, status Status, opts Options) bool {

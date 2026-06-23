@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/backrunner/xcore-bridge/internal/daemon"
 )
 
 func main() {
 	if err := runWithIO(os.Args[1:], os.Stdout, os.Stderr, os.Stdin); err != nil {
+		command := ""
+		if len(os.Args) > 1 {
+			command = os.Args[1]
+		}
+		_ = daemon.AppendBridgeLog("command failed command=%q error=%q", command, err)
 		fmt.Fprintln(os.Stderr, "xcore-bridge:", err)
 		os.Exit(1)
 	}
@@ -30,6 +37,8 @@ func runWithIO(args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 		return xrayConfigCommand(args[1:], stdout)
 	case "status":
 		return statusCommand(args[1:], stdout, stderr)
+	case "log":
+		return logCommand(args[1:], stdout, stderr)
 	case "daemon":
 		return daemonCommand(args[1:], stdout, stderr)
 	case "add":
