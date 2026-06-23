@@ -5,6 +5,7 @@ repo="${XCORE_BRIDGE_REPO:-backrunner/xcore-bridge}"
 channel="${XCORE_BRIDGE_CHANNEL:-auto}"
 version="${XCORE_BRIDGE_VERSION:-}"
 bindir="${XCORE_BRIDGE_INSTALL_DIR:-${PREFIX:-/usr/local}/bin}"
+target="$bindir/xcore-bridge"
 api_base="${GITHUB_API_URL:-https://api.github.com}"
 download_base="${GITHUB_DOWNLOAD_URL:-https://github.com}"
 
@@ -26,7 +27,7 @@ ui_header() {
 xcore-bridge installer
 ----------------------
 Repo:    $repo
-Target:  $bindir/xcore-bridge
+Target:  $target
 
 EOF
 }
@@ -73,9 +74,11 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       bindir="$1"
+      target="$bindir/xcore-bridge"
       ;;
     --bindir=*)
       bindir="${1#--bindir=}"
+      target="$bindir/xcore-bridge"
       ;;
     -h|--help)
       usage
@@ -112,6 +115,7 @@ need curl
 need tar
 need uname
 need sed
+need grep
 ui_done "Tools found"
 
 ui_step "Checking platform"
@@ -134,6 +138,40 @@ case "$arch" in
     ;;
 esac
 ui_done "Platform: $os/$arch"
+
+supports_installed_upgrade() {
+  "$target" help 2>/dev/null | grep -q '^[[:space:]]*upgrade[[:space:]]'
+}
+
+run_installed_upgrade() {
+  if [ -n "$version" ]; then
+    "$target" upgrade \
+      --version "$version" \
+      --repo "$repo" \
+      --target "$target" \
+      --api-url "$api_base" \
+      --download-url "$download_base"
+  else
+    "$target" upgrade \
+      --channel "$channel" \
+      --repo "$repo" \
+      --target "$target" \
+      --api-url "$api_base" \
+      --download-url "$download_base"
+  fi
+}
+
+if [ -f "$target" ] && [ -x "$target" ]; then
+  ui_step "Existing installation found"
+  installed_version="$("$target" version 2>/dev/null || printf 'unknown')"
+  ui_done "Installed: $installed_version"
+  if supports_installed_upgrade; then
+    ui_step "Running upgrade"
+    run_installed_upgrade
+    exit 0
+  fi
+  ui_warn "Installed xcore-bridge does not support self-upgrade; reinstalling from release"
+fi
 
 resolve_stable_release() {
   curl -fsSL "$api_base/repos/$repo/releases/latest" 2>/dev/null |
@@ -238,11 +276,11 @@ fi
 ui_done "Install directory ready"
 
 install_bin() {
-  install -m 0755 "$bin_src" "$bindir/xcore-bridge" 2>/dev/null && return 0
+  install -m 0755 "$bin_src" "$target" 2>/dev/null && return 0
   if command -v sudo >/dev/null 2>&1; then
     ui_warn "Installing to $bindir needs administrator permission because your user cannot write there."
     ui_warn "macOS may ask for your password so sudo can copy xcore-bridge into that directory."
-    sudo install -m 0755 "$bin_src" "$bindir/xcore-bridge"
+    sudo install -m 0755 "$bin_src" "$target"
     return 0
   fi
   return 1
@@ -250,17 +288,17 @@ install_bin() {
 
 ui_step "Installing binary"
 if ! install_bin; then
-  ui_fail "cannot write $bindir/xcore-bridge; retry with --bindir"
+  ui_fail "cannot write $target; retry with --bindir"
   exit 1
 fi
 ui_done "Installed binary"
 
-installed_version="$("$bindir/xcore-bridge" version)"
+installed_version="$("$target" version)"
 
 cat <<EOF
 
 Installed xcore-bridge $installed_version
-Path: $bindir/xcore-bridge
+Path: $target
 
 Next:
   xcore-bridge add 'vless://...'
