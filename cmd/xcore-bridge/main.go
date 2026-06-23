@@ -32,6 +32,8 @@ func runWithIO(args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 		return addCommand(args[1:], stdout, stderr, stdin)
 	case "remove":
 		return removeCommand(args[1:], stdout, stderr)
+	case "upgrade":
+		return upgradeCommand(args[1:], stdout, stderr, stdin)
 	case "version", "--version", "-v":
 		return versionCommand(args[1:], stdout)
 	case "help", "--help", "-h":

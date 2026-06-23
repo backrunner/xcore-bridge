@@ -14,6 +14,25 @@ curl -fsSL https://raw.githubusercontent.com/backrunner/xcore-bridge/main/script
 
 The installer shows each step inline. If `/usr/local/bin` needs administrator permission, it explains why before macOS asks for your password. Use `--bindir` to install somewhere else.
 
+Upgrade:
+
+```sh
+xcore-bridge upgrade
+```
+
+By default, `upgrade` uses the `auto` channel: latest stable first, then the newest prerelease only when no stable release exists. Choose a channel explicitly when needed:
+
+```sh
+xcore-bridge upgrade --channel stable
+xcore-bridge upgrade --channel beta
+```
+
+To install a specific release tag:
+
+```sh
+xcore-bridge upgrade --version v1.2.3
+```
+
 Add one VLESS link to Surge:
 
 ```sh
