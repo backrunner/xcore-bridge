@@ -24,6 +24,9 @@ func install(profilePath string, opts InstallOptions, replaceManaged bool) (Inst
 	if len(opts.Nodes) == 0 {
 		return InstallResult{}, fmt.Errorf("no VLESS nodes supplied")
 	}
+	if len(opts.Names) > 0 && len(opts.Names) != len(opts.Nodes) {
+		return InstallResult{}, fmt.Errorf("policy name count must match VLESS node count")
+	}
 	for _, node := range opts.Nodes {
 		if err := node.Validate(); err != nil {
 			return InstallResult{}, err
@@ -63,8 +66,12 @@ func install(profilePath string, opts InstallOptions, replaceManaged bool) (Inst
 	names := make([]string, 0, len(opts.Nodes))
 	ports := make([]int, 0, len(opts.Nodes))
 	nextPort := opts.BasePort
-	for _, node := range opts.Nodes {
-		name := uniqueName(existingNames, node.DisplayName())
+	for i, node := range opts.Nodes {
+		displayName := node.DisplayName()
+		if len(opts.Names) > 0 {
+			displayName = opts.Names[i]
+		}
+		name := uniqueName(existingNames, displayName)
 		existingNames = append(existingNames, name)
 		port, err := findAvailablePort(localProxyHost, nextPort, usedPorts, reusablePorts, opts.portAvailable)
 		if err != nil {
@@ -76,6 +83,7 @@ func install(profilePath string, opts InstallOptions, replaceManaged bool) (Inst
 			Node:             node,
 			Name:             name,
 			ExecPath:         opts.ExecPath,
+			ProfilePath:      profilePath,
 			LocalPort:        port,
 			IncludeAddresses: true,
 		})

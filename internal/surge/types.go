@@ -4,6 +4,7 @@ import "github.com/backrunner/xcore-bridge/internal/vless"
 
 type InstallOptions struct {
 	Nodes     []vless.Node
+	Names     []string
 	ExecPath  string
 	BasePort  int
 	WriteFile bool
@@ -13,6 +14,12 @@ type InstallOptions struct {
 
 type RemoveOptions struct {
 	Names     []string
+	WriteFile bool
+}
+
+type RenameOptions struct {
+	From      string
+	To        string
 	WriteFile bool
 }
 
@@ -27,6 +34,22 @@ type RemoveResult struct {
 	Profile      string
 	RemovedNames []string
 	BackupPath   string
+}
+
+type RenameResult struct {
+	Profile    string
+	OldName    string
+	NewName    string
+	BackupPath string
+}
+
+type ManagedPolicy struct {
+	Name      string
+	Link      string
+	LocalHost string
+	LocalPort int
+	RunHost   string
+	RunPort   int
 }
 
 type ProfileCandidate struct {

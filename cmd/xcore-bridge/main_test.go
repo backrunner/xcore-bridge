@@ -92,6 +92,47 @@ func TestAddLinksFileAcceptsUppercaseScheme(t *testing.T) {
 	}
 }
 
+func TestAddNameOverridesLinkName(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := run([]string{"add", "--dry-run", "--profile", profile, "--name", "Custom Node", testLink("Link Node")}, &stdout, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "Custom Node = external") {
+		t.Fatalf("expected override name in output:\n%s", output)
+	}
+	if strings.Contains(output, "Link Node = external") {
+		t.Fatalf("link name was used instead of override:\n%s", output)
+	}
+}
+
+func TestAddNameCountMustMatchLinks(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := run([]string{
+		"add",
+		"--dry-run",
+		"--profile", profile,
+		"--name", "Only One",
+		testLink("First"),
+		testLink("Second"),
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected mismatched --name count to fail")
+	}
+}
+
 func TestAddAutoDiscoversICloudProfileAndConfirmsFirstWrite(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -112,13 +153,13 @@ func TestAddAutoDiscoversICloudProfileAndConfirmsFirstWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "added 1 external proxy policies into "+profile) {
+	if !strings.Contains(stdout.String(), "added 1 external proxy policies") || !strings.Contains(stdout.String(), "profile: "+profile) {
 		t.Fatalf("unexpected add output:\n%s", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "backup: "+profile+".bak") {
 		t.Fatalf("add output should mention backup:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "using "+profile) && !strings.Contains(stderr.String(), "found Surge profile "+profile) {
+	if !strings.Contains(stderr.String(), "profile: "+profile) {
 		t.Fatalf("expected discovery notice, got:\n%s", stderr.String())
 	}
 	updated, err := os.ReadFile(profile)
@@ -187,6 +228,37 @@ func TestAddYesSkipsFirstWritePrompt(t *testing.T) {
 	}
 }
 
+func TestRemoveNameFlagDeletesManagedPolicy(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := runWithIO([]string{"remove", "--profile", profile, "--name", "Demo"}, &stdout, &bytes.Buffer{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "removed 1 external proxy policies") || !strings.Contains(stdout.String(), "profile: "+profile) {
+		t.Fatalf("unexpected remove output:\n%s", stdout.String())
+	}
+	updated, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(updated), "Demo = external") {
+		t.Fatalf("expected Demo to be removed:\n%s", updated)
+	}
+}
+
 func TestRemoveDeletesManagedPolicyAndBackup(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
@@ -206,7 +278,7 @@ Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "removed 1 external proxy policies from "+profile) {
+	if !strings.Contains(stdout.String(), "removed 1 external proxy policies") || !strings.Contains(stdout.String(), "profile: "+profile) {
 		t.Fatalf("unexpected remove output:\n%s", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "backup: "+profile+".bak") {
@@ -231,6 +303,70 @@ Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 	}
 	if string(backup) != initial {
 		t.Fatalf("backup should contain original profile:\n%s", backup)
+	}
+}
+
+func TestRenameManagedPolicyAndBackup(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+Old = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := runWithIO([]string{"rename", "--profile", profile, "Old", "New"}, &stdout, &bytes.Buffer{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "Old -> New") {
+		t.Fatalf("unexpected rename output:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "backup: "+profile+".bak") {
+		t.Fatalf("rename output should mention backup:\n%s", stdout.String())
+	}
+	updated, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(updated), "Old = external") || !strings.Contains(string(updated), "New = external") {
+		t.Fatalf("profile was not renamed:\n%s", updated)
+	}
+	backup, err := os.ReadFile(profile + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != initial {
+		t.Fatalf("backup should contain original profile:\n%s", backup)
+	}
+}
+
+func TestVerifyManagedRunTargetRejectsUnmanagedLink(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	managedLink := testLink("Managed")
+	initial := `[Proxy]
+# xcore-bridge managed external proxies begin
+Managed = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61080", args = "--link", args = "` + managedLink + `", local-port = 61080, udp-relay = true
+# xcore-bridge managed external proxies end
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyManagedRunTarget(profile, managedLink, "127.0.0.1", 61080); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyManagedRunTarget(profile, testLink("Other"), "127.0.0.1", 61080); err == nil {
+		t.Fatal("expected unmanaged link to be rejected")
+	}
+	if err := verifyManagedRunTarget(profile, managedLink, "127.0.0.1", 61081); err == nil {
+		t.Fatal("expected unmanaged port to be rejected")
 	}
 }
 

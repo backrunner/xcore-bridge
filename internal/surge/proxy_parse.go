@@ -2,10 +2,38 @@ package surge
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+func ManagedPolicies(profilePath string) ([]ManagedPolicy, error) {
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+	proxyStart, proxyEnd := sectionBounds(lines, "Proxy")
+	if proxyStart == -1 {
+		return nil, fmt.Errorf("%s has no [Proxy] section", profilePath)
+	}
+	managed, hasManaged := managedProxyBlock(lines, proxyStart, proxyEnd)
+	if !hasManaged {
+		return nil, fmt.Errorf("%s has no xcore-bridge managed proxy block", profilePath)
+	}
+	var policies []ManagedPolicy
+	for _, line := range managed {
+		policy, ok := managedPolicy(line)
+		if ok {
+			policies = append(policies, policy)
+		}
+	}
+	if len(policies) == 0 {
+		return nil, fmt.Errorf("%s has no xcore-bridge managed policies", profilePath)
+	}
+	return policies, nil
+}
 
 func normalizedRemoveNames(values []string) map[string]bool {
 	out := map[string]bool{}
@@ -68,6 +96,149 @@ func proxyNames(lines []string) []string {
 		}
 	}
 	return names
+}
+
+func managedPolicy(line string) (ManagedPolicy, bool) {
+	name, ok := proxyLineName(line)
+	if !ok {
+		return ManagedPolicy{}, false
+	}
+	fields := splitProxyFields(line)
+	if len(fields) == 0 {
+		return ManagedPolicy{}, false
+	}
+	if !strings.EqualFold(strings.TrimSpace(fields[0]), name+" = external") {
+		left, right, ok := strings.Cut(fields[0], "=")
+		if !ok || sanitizeName(left) != name || !strings.EqualFold(strings.TrimSpace(right), "external") {
+			return ManagedPolicy{}, false
+		}
+	}
+	var args []string
+	port := 0
+	host := localProxyHost
+	for _, field := range fields[1:] {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		switch key {
+		case "args":
+			arg, err := strconv.Unquote(value)
+			if err != nil {
+				arg = value
+			}
+			args = append(args, arg)
+		case "local-port":
+			parsed, err := strconv.Atoi(value)
+			if err == nil && parsed > 0 && parsed <= 65535 {
+				port = parsed
+			}
+		case "local-host", "listen":
+			if parsed, err := strconv.Unquote(value); err == nil {
+				value = parsed
+			}
+			if value != "" {
+				host = value
+			}
+		}
+	}
+	link := linkArg(args)
+	runHost, runPort := runListenArgs(args)
+	if runHost == "" {
+		runHost = host
+	}
+	if runPort == 0 {
+		runPort = port
+	}
+	if runHost != host || runPort != port {
+		return ManagedPolicy{}, false
+	}
+	if link == "" || port == 0 {
+		return ManagedPolicy{}, false
+	}
+	return ManagedPolicy{
+		Name:      name,
+		Link:      link,
+		LocalHost: host,
+		LocalPort: port,
+		RunHost:   runHost,
+		RunPort:   runPort,
+	}, true
+}
+
+func linkArg(args []string) string {
+	for i, arg := range args {
+		if arg == "--link" && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(arg)), "vless://") {
+			return strings.TrimSpace(arg)
+		}
+	}
+	return ""
+}
+
+func runListenArgs(args []string) (string, int) {
+	host := ""
+	port := 0
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--listen":
+			if i+1 < len(args) {
+				host = strings.TrimSpace(args[i+1])
+				i++
+			}
+		case "--local-port":
+			if i+1 < len(args) {
+				parsed, err := strconv.Atoi(strings.TrimSpace(args[i+1]))
+				if err == nil && parsed > 0 && parsed <= 65535 {
+					port = parsed
+				}
+				i++
+			}
+		}
+	}
+	return host, port
+}
+
+func splitProxyFields(line string) []string {
+	var fields []string
+	start := 0
+	inQuote := false
+	escaped := false
+	for i, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch r {
+		case '\\':
+			if inQuote {
+				escaped = true
+			}
+		case '"':
+			inQuote = !inQuote
+		case ',':
+			if !inQuote {
+				fields = appendProxyField(fields, line[start:i])
+				start = i + len(string(r))
+			}
+		}
+	}
+	fields = appendProxyField(fields, line[start:])
+	return fields
+}
+
+func appendProxyField(fields []string, field string) []string {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return fields
+	}
+	return append(fields, field)
 }
 
 var localPortPattern = regexp.MustCompile(`(?i)(?:^|,\s*)local-port\s*=\s*([0-9]+)\s*(?:,|[#;]|$)`)

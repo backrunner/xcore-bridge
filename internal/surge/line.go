@@ -16,6 +16,7 @@ type ProxyLineOptions struct {
 	Node             vless.Node
 	Name             string
 	ExecPath         string
+	ProfilePath      string
 	LocalPort        int
 	IncludeAddresses bool
 }
@@ -41,9 +42,14 @@ func ProxyLine(opts ProxyLineOptions) (string, error) {
 	}
 	args := []string{
 		"run",
+	}
+	if opts.ProfilePath != "" {
+		args = append(args, "--profile", opts.ProfilePath)
+	}
+	args = append(args,
 		"--local-port", strconv.Itoa(opts.LocalPort),
 		"--link", opts.Node.Raw,
-	}
+	)
 	fields := []string{
 		name + " = external",
 		"exec = " + quote(opts.ExecPath),
@@ -61,7 +67,7 @@ func ProxyLine(opts ProxyLineOptions) (string, error) {
 	return strings.Join(fields, ", "), nil
 }
 
-var unsafeNameChars = regexp.MustCompile(`[^A-Za-z0-9_. -]+`)
+var unsafeNameChars = regexp.MustCompile(`[^\p{L}\p{N}_. -]+`)
 
 func sanitizeName(name string) string {
 	name = strings.TrimSpace(name)

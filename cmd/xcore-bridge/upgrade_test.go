@@ -44,7 +44,10 @@ func TestUpgradeDryRunUsesStableRelease(t *testing.T) {
 	}
 	output := stdout.String()
 	for _, want := range []string{
-		"would upgrade xcore-bridge dev -> v1.2.3 (stable)",
+		"would upgrade xcore-bridge",
+		"from: dev",
+		"to: v1.2.3",
+		"channel: stable",
 		"asset: xcore-bridge_v1.2.3_darwin_arm64.tar.gz",
 		"path: ",
 	} {

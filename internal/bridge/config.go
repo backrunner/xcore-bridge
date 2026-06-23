@@ -17,57 +17,72 @@ type Config struct {
 	LogLevel  string
 }
 
+type PolicyConfig struct {
+	Name      string
+	Node      vless.Node
+	LocalHost string
+	LocalPort int
+}
+
+type MultiConfig struct {
+	Policies []PolicyConfig
+	LogLevel string
+}
+
 func JSONConfig(cfg Config) ([]byte, error) {
-	if err := cfg.Node.Validate(); err != nil {
-		return nil, err
+	return MultiJSONConfig(MultiConfig{
+		Policies: []PolicyConfig{
+			{
+				Node:      cfg.Node,
+				LocalHost: cfg.LocalHost,
+				LocalPort: cfg.LocalPort,
+			},
+		},
+		LogLevel: cfg.LogLevel,
+	})
+}
+
+func MultiJSONConfig(cfg MultiConfig) ([]byte, error) {
+	if len(cfg.Policies) == 0 {
+		return nil, fmt.Errorf("no policies supplied")
 	}
-	if cfg.LocalHost == "" {
-		cfg.LocalHost = "127.0.0.1"
+	logLevel := cfg.LogLevel
+	if logLevel == "" {
+		logLevel = "warning"
 	}
-	if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
-		return nil, fmt.Errorf("invalid local port %d", cfg.LocalPort)
+
+	inbounds := make([]any, 0, len(cfg.Policies))
+	outbounds := make([]any, 0, len(cfg.Policies))
+	rules := make([]any, 0, len(cfg.Policies))
+	seenPorts := map[string]bool{}
+	for i, policy := range cfg.Policies {
+		inbound, outbound, rule, err := policyConfigParts(policy, i)
+		if err != nil {
+			return nil, err
+		}
+		host := policy.LocalHost
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		key := host + ":" + strconv.Itoa(policy.LocalPort)
+		if seenPorts[key] {
+			return nil, fmt.Errorf("duplicate local SOCKS5 listener %s", key)
+		}
+		seenPorts[key] = true
+		inbounds = append(inbounds, inbound)
+		outbounds = append(outbounds, outbound)
+		rules = append(rules, rule)
 	}
-	if cfg.LogLevel == "" {
-		cfg.LogLevel = "warning"
-	}
-	outboundSettings, err := vlessSettings(cfg.Node)
-	if err != nil {
-		return nil, err
-	}
+
 	doc := map[string]any{
 		"log": map[string]any{
-			"loglevel": cfg.LogLevel,
+			"loglevel": logLevel,
 		},
-		"inbounds": []any{
-			map[string]any{
-				"tag":      "surge-in",
-				"listen":   cfg.LocalHost,
-				"port":     cfg.LocalPort,
-				"protocol": "socks",
-				"settings": map[string]any{
-					"udp":       true,
-					"auth":      "noauth",
-					"userLevel": 0,
-				},
-			},
-		},
-		"outbounds": []any{
-			map[string]any{
-				"tag":            "vless-out",
-				"protocol":       "vless",
-				"settings":       outboundSettings,
-				"streamSettings": streamSettings(cfg.Node),
-			},
-		},
+		"inbounds":  inbounds,
+		"outbounds": outbounds,
 		"routing": map[string]any{
 			"domainStrategy": "AsIs",
-			"rules": []any{
-				map[string]any{
-					"type":        "field",
-					"inboundTag":  []string{"surge-in"},
-					"outboundTag": "vless-out",
-				},
-			},
+			"rules":          rules,
 		},
 	}
 	var buf bytes.Buffer
@@ -78,6 +93,51 @@ func JSONConfig(cfg Config) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+func policyConfigParts(cfg PolicyConfig, index int) (map[string]any, map[string]any, map[string]any, error) {
+	if err := cfg.Node.Validate(); err != nil {
+		return nil, nil, nil, err
+	}
+	if cfg.LocalHost == "" {
+		cfg.LocalHost = "127.0.0.1"
+	}
+	if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
+		return nil, nil, nil, fmt.Errorf("invalid local port %d", cfg.LocalPort)
+	}
+	outboundSettings, err := vlessSettings(cfg.Node)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	inboundTag := taggedName("surge-in", cfg.LocalPort, index)
+	outboundTag := taggedName("vless-out", cfg.LocalPort, index)
+	inbound := map[string]any{
+		"tag":      inboundTag,
+		"listen":   cfg.LocalHost,
+		"port":     cfg.LocalPort,
+		"protocol": "socks",
+		"settings": map[string]any{
+			"udp":       true,
+			"auth":      "noauth",
+			"userLevel": 0,
+		},
+	}
+	outbound := map[string]any{
+		"tag":            outboundTag,
+		"protocol":       "vless",
+		"settings":       outboundSettings,
+		"streamSettings": streamSettings(cfg.Node),
+	}
+	rule := map[string]any{
+		"type":        "field",
+		"inboundTag":  []string{inboundTag},
+		"outboundTag": outboundTag,
+	}
+	return inbound, outbound, rule, nil
+}
+
+func taggedName(prefix string, port, index int) string {
+	return prefix + "-" + strconv.Itoa(port) + "-" + strconv.Itoa(index+1)
 }
 
 func vlessSettings(node vless.Node) (map[string]any, error) {

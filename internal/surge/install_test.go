@@ -147,6 +147,57 @@ Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 	}
 }
 
+func TestAddUsesPolicyNameOverrides(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := `[Proxy]
+Custom = direct
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Add(profile, InstallOptions{
+		Nodes:     []vless.Node{testSurgeNode(t, "Link Name")},
+		Names:     []string{"Custom"},
+		ExecPath:  "/opt/homebrew/bin/xcore-bridge",
+		BasePort:  61080,
+		WriteFile: false,
+		portAvailable: func(_ string, _ int) bool {
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.PolicyNames[0]; got != "Custom 2" {
+		t.Fatalf("expected override name to be uniqued, got %q", got)
+	}
+	if !strings.Contains(result.Profile, "Custom 2 = external") {
+		t.Fatalf("profile missing override name:\n%s", result.Profile)
+	}
+	if strings.Contains(result.Profile, "Link Name = external") {
+		t.Fatalf("link fragment name was used instead of override:\n%s", result.Profile)
+	}
+}
+
+func TestAddRequiresNameOverrideCountToMatchNodes(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Add(profile, InstallOptions{
+		Nodes: []vless.Node{
+			testSurgeNode(t, "First"),
+			testSurgeNode(t, "Second"),
+		},
+		Names: []string{"Only One"},
+	})
+	if err == nil {
+		t.Fatal("expected mismatched name override count to fail")
+	}
+}
+
 func TestInstallDryRunDoesNotWriteFile(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")

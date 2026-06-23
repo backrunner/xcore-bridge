@@ -19,12 +19,25 @@ type Server struct {
 }
 
 func Start(ctx context.Context, cfg Config) (_ *Server, err error) {
+	return StartMulti(ctx, MultiConfig{
+		Policies: []PolicyConfig{
+			{
+				Node:      cfg.Node,
+				LocalHost: cfg.LocalHost,
+				LocalPort: cfg.LocalPort,
+			},
+		},
+		LogLevel: cfg.LogLevel,
+	})
+}
+
+func StartMulti(ctx context.Context, cfg MultiConfig) (_ *Server, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("xray panic during startup: %v", recovered)
 		}
 	}()
-	data, err := JSONConfig(cfg)
+	data, err := MultiJSONConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -41,9 +54,11 @@ func Start(ctx context.Context, cfg Config) (_ *Server, err error) {
 		return nil, fmt.Errorf("start xray server: %w", err)
 	}
 	started := &Server{coreServer: server}
-	if err := waitForReady(ctx, cfg.LocalHost, cfg.LocalPort, 2*time.Second); err != nil {
-		_ = started.Close()
-		return nil, err
+	for _, policy := range cfg.Policies {
+		if err := waitForReady(ctx, policy.LocalHost, policy.LocalPort, 2*time.Second); err != nil {
+			_ = started.Close()
+			return nil, err
+		}
 	}
 	return started, nil
 }
@@ -98,6 +113,10 @@ func waitForReady(ctx context.Context, host string, port int, timeout time.Durat
 		case <-timer.C:
 		}
 	}
+}
+
+func WaitForReady(ctx context.Context, host string, port int, timeout time.Duration) error {
+	return waitForReady(ctx, host, port, timeout)
 }
 
 func checkSOCKS5Ready(conn net.Conn, timeout time.Duration) error {

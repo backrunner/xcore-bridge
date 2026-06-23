@@ -22,6 +22,8 @@ func addCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) error 
 	fs.SetOutput(io.Discard)
 	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
 	linksFile := fs.String("links-file", "", "file with one VLESS share link per line")
+	var names repeatedFlag
+	fs.Var(&names, "name", "policy name override; repeat once per VLESS link")
 	execPath := fs.String("exec", defaultExecPath(), "path to xcore-bridge executable")
 	basePort := fs.Int("base-port", 61080, "first local port to assign")
 	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
@@ -55,6 +57,9 @@ func addCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) error 
 		}
 		nodes = append(nodes, node)
 	}
+	if len(names) > 0 && len(names) != len(nodes) {
+		return fmt.Errorf("add --name must be supplied once per VLESS link; got %d names for %d links", len(names), len(nodes))
+	}
 
 	alreadyManaged, err := surge.ProfileHasManagedBlock(profilePath)
 	if err != nil {
@@ -72,6 +77,7 @@ func addCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) error 
 
 	updated, err := surge.Add(profilePath, surge.InstallOptions{
 		Nodes:     nodes,
+		Names:     []string(names),
 		ExecPath:  *execPath,
 		BasePort:  *basePort,
 		WriteFile: !*dryRun,
@@ -83,12 +89,15 @@ func addCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) error 
 		fmt.Fprint(stdout, updated.Profile)
 		return nil
 	}
-	fmt.Fprintf(stdout, "added %d external proxy policies into %s\n", len(updated.PolicyNames), profilePath)
+	ui := newUI(stdout)
+	ui.Success("added %d external proxy policies", len(updated.PolicyNames))
+	ui.KeyValue("profile", profilePath)
 	if updated.BackupPath != "" {
-		fmt.Fprintf(stdout, "backup: %s\n", updated.BackupPath)
+		ui.KeyValue("backup", updated.BackupPath)
 	}
+	ui.Info("policies")
 	for i, name := range updated.PolicyNames {
-		fmt.Fprintf(stdout, "%s local-port=%d\n", name, updated.LocalPorts[i])
+		ui.Item(name, fmt.Sprintf("local-port=%d", updated.LocalPorts[i]))
 	}
 	return nil
 }
@@ -101,10 +110,13 @@ func removeCommand(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(io.Discard)
 	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
 	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
+	var flagNames repeatedFlag
+	fs.Var(&flagNames, "name", "managed policy name to remove; repeat to remove several")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	names := fs.Args()
+	names := append([]string{}, []string(flagNames)...)
+	names = append(names, fs.Args()...)
 	if len(names) == 0 {
 		return errors.New("remove requires at least one managed policy name")
 	}
@@ -124,13 +136,86 @@ func removeCommand(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprint(stdout, updated.Profile)
 		return nil
 	}
-	fmt.Fprintf(stdout, "removed %d external proxy policies from %s\n", len(updated.RemovedNames), profilePath)
+	ui := newUI(stdout)
+	ui.Success("removed %d external proxy policies", len(updated.RemovedNames))
+	ui.KeyValue("profile", profilePath)
 	if updated.BackupPath != "" {
-		fmt.Fprintf(stdout, "backup: %s\n", updated.BackupPath)
+		ui.KeyValue("backup", updated.BackupPath)
 	}
+	ui.Info("removed")
 	for _, name := range updated.RemovedNames {
-		fmt.Fprintf(stdout, "%s\n", name)
+		ui.Item(name)
 	}
+	return nil
+}
+
+func renameCommand(args []string, stdout, stderr io.Writer) error {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
+	from := fs.String("from", "", "managed policy name to rename")
+	to := fs.String("to", "", "new managed policy name")
+	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	positional := fs.Args()
+	oldName := strings.TrimSpace(*from)
+	newName := strings.TrimSpace(*to)
+	switch {
+	case oldName == "" && newName == "" && len(positional) == 2:
+		oldName = positional[0]
+		newName = positional[1]
+	case oldName != "" && newName != "" && len(positional) == 0:
+	case oldName != "" && newName == "" && len(positional) == 1:
+		newName = positional[0]
+	case oldName == "" && newName != "" && len(positional) == 1:
+		oldName = positional[0]
+	default:
+		return errors.New("rename requires old and new managed policy names")
+	}
+
+	profilePath, err := selectedProfilePath(*profile, stderr, "rename")
+	if err != nil {
+		return err
+	}
+	updated, err := surge.Rename(profilePath, surge.RenameOptions{
+		From:      oldName,
+		To:        newName,
+		WriteFile: !*dryRun,
+	})
+	if err != nil {
+		return err
+	}
+	if *dryRun {
+		fmt.Fprint(stdout, updated.Profile)
+		return nil
+	}
+	ui := newUI(stdout)
+	ui.Success("renamed external proxy policy")
+	ui.KeyValue("profile", profilePath)
+	if updated.BackupPath != "" {
+		ui.KeyValue("backup", updated.BackupPath)
+	}
+	ui.Item(updated.OldName, "->", updated.NewName)
+	return nil
+}
+
+type repeatedFlag []string
+
+func (f *repeatedFlag) String() string {
+	return strings.Join(*f, ", ")
+}
+
+func (f *repeatedFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("name cannot be empty")
+	}
+	*f = append(*f, value)
 	return nil
 }
 
@@ -176,9 +261,15 @@ func selectedProfilePath(raw string, stderr io.Writer, command string) (string, 
 	selected := candidates[0]
 	profilePath = selected.Path
 	if len(candidates) == 1 {
-		fmt.Fprintf(stderr, "xcore-bridge: found Surge profile %s (%s)\n", profilePath, selected.Source)
+		ui := newUI(stderr)
+		ui.Info("found Surge profile")
+		ui.KeyValue("profile", profilePath)
+		ui.KeyValue("source", selected.Source)
 	} else {
-		fmt.Fprintf(stderr, "xcore-bridge: found %d Surge profiles; using %s (%s)\n", len(candidates), profilePath, selected.Source)
+		ui := newUI(stderr)
+		ui.Info("found %d Surge profiles; using first match", len(candidates))
+		ui.KeyValue("profile", profilePath)
+		ui.KeyValue("source", selected.Source)
 	}
 	return profilePath, nil
 }
@@ -190,7 +281,11 @@ func confirmFirstProfileChange(stdin io.Reader, stderr io.Writer, profilePath st
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	fmt.Fprintf(stderr, "xcore-bridge will update this Surge profile for the first time:\n  %s\nA single backup will be kept at:\n  %s.bak\nContinue? [y/N] ", profilePath, profilePath)
+	ui := newUI(stderr)
+	ui.Title("First Profile Update")
+	ui.KeyValue("profile", profilePath)
+	ui.KeyValue("backup", profilePath+".bak")
+	fmt.Fprint(stderr, "Continue? [y/N] ")
 	answer, err := bufio.NewReader(stdin).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err

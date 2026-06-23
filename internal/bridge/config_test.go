@@ -42,6 +42,52 @@ func TestJSONConfigWithLevelLoadsInXray(t *testing.T) {
 	}
 }
 
+func TestMultiJSONConfigRoutesEachInboundToMatchingOutbound(t *testing.T) {
+	first, err := vless.Parse("vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#First")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := vless.Parse("vless://00000000000000000000000000000000@example.org:443?encryption=none&security=tls&sni=www.example.org&type=ws&host=cdn.example.org&path=%2Fws#Second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := MultiJSONConfig(MultiConfig{
+		Policies: []PolicyConfig{
+			{Name: "First", Node: first, LocalHost: "127.0.0.1", LocalPort: 61080},
+			{Name: "Second", Node: second, LocalHost: "127.0.0.1", LocalPort: 61081},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.LoadConfig("json", bytes.NewReader(data)); err != nil {
+		t.Fatalf("xray rejected generated config: %v\n%s", err, data)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	inbounds := doc["inbounds"].([]any)
+	outbounds := doc["outbounds"].([]any)
+	routing := doc["routing"].(map[string]any)
+	rules := routing["rules"].([]any)
+	if len(inbounds) != 2 || len(outbounds) != 2 || len(rules) != 2 {
+		t.Fatalf("expected two inbounds/outbounds/rules:\n%s", data)
+	}
+	firstInbound := inbounds[0].(map[string]any)["tag"]
+	firstOutbound := outbounds[0].(map[string]any)["tag"]
+	firstRule := rules[0].(map[string]any)
+	if got := firstRule["inboundTag"].([]any)[0]; got != firstInbound {
+		t.Fatalf("first rule inbound mismatch: %#v vs %#v", got, firstInbound)
+	}
+	if got := firstRule["outboundTag"]; got != firstOutbound {
+		t.Fatalf("first rule outbound mismatch: %#v vs %#v", got, firstOutbound)
+	}
+	if _, ok := routing["balancers"]; ok {
+		t.Fatalf("daemon config must not emit routing balancers:\n%s", data)
+	}
+}
+
 func TestJSONConfigRejectsInvalidLevel(t *testing.T) {
 	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=tcp&level=bad#Example")
 	if err != nil {

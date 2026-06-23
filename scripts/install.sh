@@ -9,6 +9,29 @@ target="$bindir/xcore-bridge"
 api_base="${GITHUB_API_URL:-https://api.github.com}"
 download_base="${GITHUB_DOWNLOAD_URL:-https://github.com}"
 
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ -z "${XCORE_BRIDGE_NO_COLOR:-}" ]; then
+  ui_bold="$(printf '\033[1m')"
+  ui_dim="$(printf '\033[2m')"
+  ui_reset="$(printf '\033[0m')"
+  ui_green="$(printf '\033[32m')"
+  ui_cyan="$(printf '\033[36m')"
+else
+  ui_bold=""
+  ui_dim=""
+  ui_reset=""
+  ui_green=""
+  ui_cyan=""
+fi
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ -z "${XCORE_BRIDGE_NO_COLOR:-}" ]; then
+  ui_err_reset="$(printf '\033[0m')"
+  ui_red="$(printf '\033[31m')"
+  ui_yellow="$(printf '\033[33m')"
+else
+  ui_err_reset=""
+  ui_red=""
+  ui_yellow=""
+fi
+
 usage() {
   cat <<'EOF'
 Usage: install.sh [--beta|--stable] [--version vX.Y.Z] [--bindir DIR]
@@ -24,28 +47,28 @@ EOF
 ui_header() {
   cat <<EOF
 
-xcore-bridge installer
-----------------------
-Repo:    $repo
-Target:  $target
+${ui_bold}xcore-bridge installer${ui_reset}
+${ui_dim}----------------------${ui_reset}
+Repo:    ${ui_cyan}$repo${ui_reset}
+Target:  ${ui_cyan}$target${ui_reset}
 
 EOF
 }
 
 ui_step() {
-  printf '[..] %s\n' "$1"
+  printf '%s•%s %s\n' "$ui_cyan" "$ui_reset" "$1"
 }
 
 ui_done() {
-  printf '[ok] %s\n' "$1"
+  printf '%s✓%s %s\n' "$ui_green" "$ui_reset" "$1"
 }
 
 ui_warn() {
-  printf '[!] %s\n' "$1" >&2
+  printf '%s!%s %s\n' "$ui_yellow" "$ui_err_reset" "$1" >&2
 }
 
 ui_fail() {
-  printf '[x] %s\n' "$1" >&2
+  printf '%sx%s %s\n' "$ui_red" "$ui_err_reset" "$1" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -297,10 +320,10 @@ installed_version="$("$target" version)"
 
 cat <<EOF
 
-Installed xcore-bridge $installed_version
-Path: $target
+${ui_bold}Installed xcore-bridge${ui_reset} ${ui_green}$installed_version${ui_reset}
+Path: ${ui_cyan}$target${ui_reset}
 
-Next:
+${ui_bold}Next${ui_reset}:
   xcore-bridge add 'vless://...'
 
 EOF

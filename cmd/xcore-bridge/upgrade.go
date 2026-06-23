@@ -148,14 +148,25 @@ func upgradeCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) er
 
 	switch {
 	case result.Skipped:
-		fmt.Fprintf(stdout, "xcore-bridge is already at %s (%s)\n", result.TargetVersion, result.Channel)
+		ui := newUI(stdout)
+		ui.Success("xcore-bridge is already up to date")
+		ui.KeyValue("version", result.TargetVersion)
+		ui.KeyValue("channel", result.Channel)
 	case result.DryRun:
-		fmt.Fprintf(stdout, "would upgrade xcore-bridge %s -> %s (%s)\n", result.CurrentVersion, result.TargetVersion, result.Channel)
-		fmt.Fprintf(stdout, "asset: %s\n", result.AssetName)
-		fmt.Fprintf(stdout, "path: %s\n", result.TargetPath)
+		ui := newUI(stdout)
+		ui.Info("would upgrade xcore-bridge")
+		ui.KeyValue("from", result.CurrentVersion)
+		ui.KeyValue("to", result.TargetVersion)
+		ui.KeyValue("channel", result.Channel)
+		ui.KeyValue("asset", result.AssetName)
+		ui.KeyValue("path", result.TargetPath)
 	default:
-		fmt.Fprintf(stdout, "upgraded xcore-bridge %s -> %s (%s)\n", result.CurrentVersion, result.TargetVersion, result.Channel)
-		fmt.Fprintf(stdout, "path: %s\n", result.TargetPath)
+		ui := newUI(stdout)
+		ui.Success("upgraded xcore-bridge")
+		ui.KeyValue("from", result.CurrentVersion)
+		ui.KeyValue("to", result.TargetVersion)
+		ui.KeyValue("channel", result.Channel)
+		ui.KeyValue("path", result.TargetPath)
 	}
 	return nil
 }
@@ -468,7 +479,7 @@ func installUpgradeBinary(src, target string, stdin io.Reader, stderr io.Writer)
 	if stdin == nil {
 		stdin = os.Stdin
 	}
-	fmt.Fprintf(stderr, "xcore-bridge: installing to %s requires administrator permission\n", target)
+	newUI(stderr).Warn("installing to %s requires administrator permission", target)
 	command := exec.Command("sudo", "install", "-m", "0755", src, target)
 	command.Stdin = stdin
 	command.Stdout = stderr
