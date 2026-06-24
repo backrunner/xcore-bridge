@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/backrunner/xcore-bridge/internal/daemon"
 )
 
 func TestUpgradeDryRunUsesStableRelease(t *testing.T) {
@@ -125,7 +127,10 @@ func TestUpgradeVersionUsesExactTag(t *testing.T) {
 
 func TestUpgradeDownloadsVerifiesAndInstallsBetaRelease(t *testing.T) {
 	withUpgradePlatform(t, "darwin", "arm64")
-	withUpgradeStopDaemon(t, func(io.Writer) error {
+	withUpgradeStopDaemon(t, func(io.Writer) (daemon.Status, error) {
+		return daemon.Status{}, nil
+	})
+	withUpgradeStartDaemon(t, func(daemon.Status, string, io.Writer) error {
 		return nil
 	})
 	dir := t.TempDir()
@@ -214,8 +219,12 @@ func TestUpgradeStopsDaemonBeforeInstalling(t *testing.T) {
 	defer server.Close()
 
 	var calls []string
-	withUpgradeStopDaemon(t, func(io.Writer) error {
+	withUpgradeStopDaemon(t, func(io.Writer) (daemon.Status, error) {
 		calls = append(calls, "stop")
+		return daemon.Status{Running: true, ProfilePath: "/tmp/surge.conf"}, nil
+	})
+	withUpgradeStartDaemon(t, func(status daemon.Status, target string, _ io.Writer) error {
+		calls = append(calls, "start:"+status.ProfilePath+":"+target)
 		return nil
 	})
 	previousInstall := upgradeInstall
@@ -245,8 +254,114 @@ func TestUpgradeStopsDaemonBeforeInstalling(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(calls, ",") != "stop,install" {
+	wantCalls := "stop,install,start:/tmp/surge.conf:" + target
+	if strings.Join(calls, ",") != wantCalls {
 		t.Fatalf("expected daemon stop before install, got %v", calls)
+	}
+}
+
+func TestUpgradeDoesNotStartDaemonWhenItWasStopped(t *testing.T) {
+	withUpgradePlatform(t, "darwin", "arm64")
+	dir := t.TempDir()
+	target := filepath.Join(dir, "xcore-bridge")
+	if err := os.WriteFile(target, []byte("old-binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	assetName := "xcore-bridge_v2.0.0-beta.1_darwin_arm64.tar.gz"
+	newBinary := []byte("new-binary")
+	archive := makeUpgradeArchive(t, "xcore-bridge_v2.0.0-beta.1_darwin_arm64/xcore-bridge", newBinary)
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%x  %s\n", sum, assetName)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/backrunner/xcore-bridge/releases":
+			fmt.Fprint(w, `[{"tag_name":"v2.0.0-beta.1","prerelease":true,"draft":false}]`)
+		case "/backrunner/xcore-bridge/releases/download/v2.0.0-beta.1/" + assetName:
+			w.Write(archive)
+		case "/backrunner/xcore-bridge/releases/download/v2.0.0-beta.1/checksums.txt":
+			fmt.Fprint(w, checksums)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	withUpgradeStopDaemon(t, func(io.Writer) (daemon.Status, error) {
+		return daemon.Status{}, nil
+	})
+	started := false
+	withUpgradeStartDaemon(t, func(daemon.Status, string, io.Writer) error {
+		started = true
+		return nil
+	})
+
+	if _, err := runUpgrade(context.Background(), upgradeOptions{
+		Repo:           defaultUpgradeRepo,
+		Channel:        "beta",
+		APIBase:        server.URL,
+		DownloadBase:   server.URL,
+		TargetPath:     target,
+		CurrentVersion: "v1.0.0",
+		HTTPClient:     server.Client(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if started {
+		t.Fatal("daemon should not restart when it was not running before upgrade")
+	}
+}
+
+func TestUpgradeDoesNotStartInstalledLaunchAgentWhenStopped(t *testing.T) {
+	withUpgradePlatform(t, "darwin", "arm64")
+	dir := t.TempDir()
+	target := filepath.Join(dir, "xcore-bridge")
+	if err := os.WriteFile(target, []byte("old-binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	assetName := "xcore-bridge_v2.0.0-beta.1_darwin_arm64.tar.gz"
+	archive := makeUpgradeArchive(t, "xcore-bridge_v2.0.0-beta.1_darwin_arm64/xcore-bridge", []byte("new-binary"))
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%x  %s\n", sum, assetName)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/backrunner/xcore-bridge/releases":
+			fmt.Fprint(w, `[{"tag_name":"v2.0.0-beta.1","prerelease":true,"draft":false}]`)
+		case "/backrunner/xcore-bridge/releases/download/v2.0.0-beta.1/" + assetName:
+			w.Write(archive)
+		case "/backrunner/xcore-bridge/releases/download/v2.0.0-beta.1/checksums.txt":
+			fmt.Fprint(w, checksums)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	withUpgradeStopDaemon(t, func(io.Writer) (daemon.Status, error) {
+		return daemon.Status{LaunchAgent: true}, nil
+	})
+	started := false
+	withUpgradeStartDaemon(t, func(daemon.Status, string, io.Writer) error {
+		started = true
+		return nil
+	})
+
+	if _, err := runUpgrade(context.Background(), upgradeOptions{
+		Repo:           defaultUpgradeRepo,
+		Channel:        "beta",
+		APIBase:        server.URL,
+		DownloadBase:   server.URL,
+		TargetPath:     target,
+		CurrentVersion: "v1.0.0",
+		HTTPClient:     server.Client(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if started {
+		t.Fatal("stopped launch agent should not be started by upgrade")
 	}
 }
 
@@ -327,11 +442,20 @@ func withUpgradePlatform(t *testing.T, goos, goarch string) {
 	})
 }
 
-func withUpgradeStopDaemon(t *testing.T, fn func(io.Writer) error) {
+func withUpgradeStopDaemon(t *testing.T, fn func(io.Writer) (daemon.Status, error)) {
 	t.Helper()
 	previous := upgradeStopDaemon
 	upgradeStopDaemon = fn
 	t.Cleanup(func() {
 		upgradeStopDaemon = previous
+	})
+}
+
+func withUpgradeStartDaemon(t *testing.T, fn func(daemon.Status, string, io.Writer) error) {
+	t.Helper()
+	previous := upgradeStartDaemon
+	upgradeStartDaemon = fn
+	t.Cleanup(func() {
+		upgradeStartDaemon = previous
 	})
 }

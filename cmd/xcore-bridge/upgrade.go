@@ -27,10 +27,11 @@ import (
 const defaultUpgradeRepo = "backrunner/xcore-bridge"
 
 var (
-	upgradeExecutable = os.Executable
-	upgradePlatform   = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
-	upgradeInstall    = installUpgradeBinary
-	upgradeStopDaemon = stopDaemonForUpgrade
+	upgradeExecutable  = os.Executable
+	upgradePlatform    = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
+	upgradeInstall     = installUpgradeBinary
+	upgradeStopDaemon  = stopDaemonForUpgrade
+	upgradeStartDaemon = startDaemonAfterUpgrade
 )
 
 type upgradeOptions struct {
@@ -231,11 +232,17 @@ func runUpgrade(ctx context.Context, opts upgradeOptions) (upgradeResult, error)
 	if err != nil {
 		return upgradeResult{}, err
 	}
-	if err := upgradeStopDaemon(opts.Stderr); err != nil {
+	previousDaemon, err := upgradeStopDaemon(opts.Stderr)
+	if err != nil {
 		return upgradeResult{}, err
 	}
 	if err := upgradeInstall(binaryPath, opts.TargetPath, opts.Stdin, opts.Stderr); err != nil {
 		return upgradeResult{}, err
+	}
+	if previousDaemon.Running {
+		if err := upgradeStartDaemon(previousDaemon, opts.TargetPath, opts.Stderr); err != nil {
+			return upgradeResult{}, err
+		}
 	}
 	return result, nil
 }
@@ -496,16 +503,79 @@ func installUpgradeBinary(src, target string, stdin io.Reader, stderr io.Writer)
 	return nil
 }
 
-func stopDaemonForUpgrade(stderr io.Writer) error {
+func stopDaemonForUpgrade(stderr io.Writer) (daemon.Status, error) {
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	status, err := daemon.Stop(daemon.Options{Timeout: 5 * time.Second})
-	if err != nil {
-		return fmt.Errorf("stop daemon before upgrade: %w", err)
+	status, statusErr := daemon.GetStatus(daemon.Options{})
+	if statusErr != nil {
+		return status, fmt.Errorf("inspect daemon before upgrade: %w", statusErr)
 	}
-	if status.PID != 0 || status.StalePID {
+	if status.LaunchAgent {
+		if status.Running {
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			if _, err := daemon.StopLaunchAgent(ctx); err != nil {
+				return status, fmt.Errorf("stop launch agent before upgrade: %w", err)
+			}
+			newUI(stderr).Info("stopped xcore-bridge launch agent before upgrade")
+		}
+		return status, nil
+	}
+	if !status.Running {
+		if status.StalePID {
+			stopped, err := daemon.Stop(daemon.Options{Timeout: 5 * time.Second})
+			if err != nil {
+				return stopped, fmt.Errorf("clear stale daemon state before upgrade: %w", err)
+			}
+		}
+		return status, nil
+	}
+	stopped, err := daemon.Stop(daemon.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return status, fmt.Errorf("stop daemon before upgrade: %w", err)
+	}
+	if stopped.PID != 0 || stopped.StalePID || status.PID != 0 {
 		newUI(stderr).Info("stopped existing xcore-bridge daemon before upgrade")
+	}
+	return status, nil
+}
+
+func startDaemonAfterUpgrade(previous daemon.Status, targetPath string, stderr io.Writer) error {
+	if !previous.Running && !previous.LaunchAgent {
+		return nil
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	if previous.LaunchAgent {
+		status, err := daemon.StartLaunchAgent(ctx, daemon.Options{
+			ProfilePath: previous.ProfilePath,
+			Timeout:     5 * time.Second,
+		})
+		if err != nil {
+			return fmt.Errorf("restart launch agent after upgrade: %w", err)
+		}
+		ui := newUI(stderr)
+		ui.Info("restarted xcore-bridge launch agent after upgrade")
+		if status.PID != 0 {
+			ui.KeyValue("pid", fmt.Sprintf("%d", status.PID))
+		}
+		return nil
+	}
+	status, err := daemon.Start(ctx, daemon.Options{
+		ProfilePath: previous.ProfilePath,
+		ExecPath:    targetPath,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("restart daemon after upgrade: %w", err)
+	}
+	newUI(stderr).Info("restarted xcore-bridge daemon after upgrade")
+	if status.PID != 0 {
+		newUI(stderr).KeyValue("pid", fmt.Sprintf("%d", status.PID))
 	}
 	return nil
 }

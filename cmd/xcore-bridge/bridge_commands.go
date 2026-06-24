@@ -167,7 +167,7 @@ func statusCommand(args []string, stdout, stderr io.Writer) error {
 
 func daemonCommand(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("daemon requires start, stop, restart, status, log, or serve")
+		return errors.New("daemon requires start, stop, restart, install, uninstall, status, log, or serve")
 	}
 	switch args[0] {
 	case "start":
@@ -176,6 +176,10 @@ func daemonCommand(args []string, stdout, stderr io.Writer) error {
 		return daemonStopCommand(args[1:], stdout, stderr)
 	case "restart":
 		return daemonRestartCommand(args[1:], stdout, stderr)
+	case "install":
+		return daemonInstallCommand(args[1:], stdout, stderr)
+	case "uninstall":
+		return daemonUninstallCommand(args[1:], stdout, stderr)
 	case "status":
 		return statusCommand(args[1:], stdout, stderr)
 	case "log":
@@ -233,6 +237,45 @@ func daemonRestartCommand(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	printDaemonStatus(stdout, status)
+	return nil
+}
+
+func daemonInstallCommand(args []string, stdout, stderr io.Writer) error {
+	opts, err := daemonControlOptions("daemon install", args, stderr)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout+time.Second)
+	defer cancel()
+	info, status, err := daemon.InstallLaunchAgent(ctx, opts)
+	if err != nil {
+		return err
+	}
+	ui := newUI(stdout)
+	ui.Success("daemon launch agent installed")
+	ui.KeyValue("label", info.Label)
+	ui.KeyValue("plist", info.Path)
+	printDaemonStatus(stdout, status)
+	return nil
+}
+
+func daemonUninstallCommand(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("daemon uninstall", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	timeout := fs.Duration("timeout", 5*time.Second, "launchd uninstall timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout+time.Second)
+	defer cancel()
+	info, _, err := daemon.UninstallLaunchAgent(ctx)
+	if err != nil {
+		return err
+	}
+	ui := newUI(stdout)
+	ui.Success("daemon launch agent uninstalled")
+	ui.KeyValue("label", info.Label)
+	ui.KeyValue("plist", info.Path)
 	return nil
 }
 
@@ -304,6 +347,9 @@ func printDaemonStatus(stdout io.Writer, status daemon.Status) {
 		ui.Warn("daemon stopped (stale pid=%d)", status.PID)
 	} else {
 		ui.Info("daemon stopped")
+	}
+	if status.LaunchAgent {
+		ui.KeyValue("launchd", "installed")
 	}
 	if status.Error != "" {
 		ui.Warn("%s", status.Error)

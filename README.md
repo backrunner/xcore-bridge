@@ -87,6 +87,8 @@ xcore-bridge status
 xcore-bridge daemon start
 xcore-bridge daemon stop
 xcore-bridge daemon restart
+xcore-bridge daemon install
+xcore-bridge daemon uninstall
 ```
 
 Inspect logs when Surge or a managed policy fails to connect:
@@ -99,6 +101,8 @@ xcore-bridge daemon log --follow
 ```
 
 `xcore-bridge log` shows the foreground processes that Surge starts. `xcore-bridge daemon log` shows output from manual daemon commands.
+
+`daemon install` registers a user LaunchAgent for the manual daemon, starts it at login, and lets macOS restart it if it exits. This is separate from the default Surge External Proxy mode, where Surge owns each foreground policy process.
 
 Reload Surge after the profile is updated, then select the new policies in Surge.
 

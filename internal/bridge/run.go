@@ -86,12 +86,16 @@ func waitForReady(ctx context.Context, host string, port int, timeout time.Durat
 	}
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for {
 		dialTimeout := 100 * time.Millisecond
 		if remaining := time.Until(deadline); remaining < dialTimeout {
 			dialTimeout = remaining
 		}
 		if dialTimeout <= 0 {
+			if lastErr != nil {
+				return fmt.Errorf("xray SOCKS inbound did not become ready at %s within %s: last error: %w", address, timeout, lastErr)
+			}
 			return fmt.Errorf("xray SOCKS inbound did not become ready at %s within %s", address, timeout)
 		}
 		conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", address)
@@ -99,8 +103,12 @@ func waitForReady(ctx context.Context, host string, port int, timeout time.Durat
 			if err := checkSOCKS5Ready(conn, dialTimeout); err == nil {
 				_ = conn.Close()
 				return nil
+			} else {
+				lastErr = err
 			}
 			_ = conn.Close()
+		} else {
+			lastErr = err
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -135,6 +143,44 @@ func checkSOCKS5Ready(conn net.Conn, timeout time.Duration) error {
 	}
 	if reply[0] != 0x05 || reply[1] != 0x00 {
 		return fmt.Errorf("unexpected SOCKS5 greeting response %x", reply)
+	}
+	if _, err := conn.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		return err
+	}
+	return readSOCKS5Reply(conn)
+}
+
+func readSOCKS5Reply(conn net.Conn) error {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return err
+	}
+	if header[0] != 0x05 {
+		return fmt.Errorf("unexpected SOCKS5 reply version %x", header[0])
+	}
+	if header[1] != 0x00 {
+		return fmt.Errorf("SOCKS5 readiness request rejected with code %x", header[1])
+	}
+	var extra int
+	switch header[3] {
+	case 0x01:
+		extra = net.IPv4len + 2
+	case 0x03:
+		length := make([]byte, 1)
+		if _, err := io.ReadFull(conn, length); err != nil {
+			return err
+		}
+		extra = int(length[0]) + 2
+	case 0x04:
+		extra = net.IPv6len + 2
+	default:
+		return fmt.Errorf("unexpected SOCKS5 reply address type %x", header[3])
+	}
+	if extra > 0 {
+		discard := make([]byte, extra)
+		if _, err := io.ReadFull(conn, discard); err != nil {
+			return err
+		}
 	}
 	return nil
 }

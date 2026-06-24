@@ -8,6 +8,8 @@ bindir="${XCORE_BRIDGE_INSTALL_DIR:-${PREFIX:-/usr/local}/bin}"
 target="$bindir/xcore-bridge"
 api_base="${GITHUB_API_URL:-https://api.github.com}"
 download_base="${GITHUB_DOWNLOAD_URL:-https://github.com}"
+restart_daemon_after_install=0
+restart_daemon_profile=""
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ -z "${XCORE_BRIDGE_NO_COLOR:-}" ]; then
   ui_bold="$(printf '\033[1m')"
@@ -170,10 +172,29 @@ supports_installed_daemon_stop() {
   "$target" help 2>/dev/null | grep -q '^[[:space:]]*daemon[[:space:]]'
 }
 
+daemon_is_running() {
+  [ -f "$target" ] && [ -x "$target" ] || return 1
+  "$target" status 2>/dev/null | grep -q 'daemon running'
+}
+
+remember_existing_daemon() {
+  restart_daemon_after_install=0
+  restart_daemon_profile=""
+  if [ ! -f "$target" ] || [ ! -x "$target" ]; then
+    return 0
+  fi
+  status_output="$("$target" status 2>/dev/null || true)"
+  if printf '%s\n' "$status_output" | grep -q 'daemon running'; then
+    restart_daemon_after_install=1
+    restart_daemon_profile="$(printf '%s\n' "$status_output" | sed -n 's/^[[:space:]]*profile:[[:space:]]*//p' | head -n 1)"
+  fi
+}
+
 stop_existing_daemon() {
   if [ ! -f "$target" ] || [ ! -x "$target" ]; then
     return 0
   fi
+  remember_existing_daemon
   if supports_installed_daemon_stop; then
     ui_step "Stopping existing daemon"
     if "$target" daemon stop >/dev/null; then
@@ -184,6 +205,32 @@ stop_existing_daemon() {
     exit 1
   fi
   ui_warn "Installed xcore-bridge does not support daemon stop; continuing install"
+}
+
+restart_existing_daemon_if_needed() {
+  if [ "$restart_daemon_after_install" != 1 ]; then
+    return 0
+  fi
+  if daemon_is_running; then
+    return 0
+  fi
+  if ! supports_installed_daemon_stop; then
+    ui_warn "Installed xcore-bridge does not support daemon start; daemon was not restarted"
+    return 0
+  fi
+  ui_step "Restarting existing daemon"
+  if [ -n "$restart_daemon_profile" ]; then
+    if "$target" daemon start --profile "$restart_daemon_profile" >/dev/null; then
+      ui_done "Daemon restarted"
+      return 0
+    fi
+  else
+    if "$target" daemon start >/dev/null; then
+      ui_done "Daemon restarted"
+      return 0
+    fi
+  fi
+  ui_warn "Could not restart the existing daemon automatically; run xcore-bridge daemon start"
 }
 
 run_installed_upgrade() {
@@ -209,9 +256,10 @@ if [ -f "$target" ] && [ -x "$target" ]; then
   installed_version="$("$target" version 2>/dev/null || printf 'unknown')"
   ui_done "Installed: $installed_version"
   if supports_installed_upgrade; then
-    stop_existing_daemon
+    remember_existing_daemon
     ui_step "Running upgrade"
     run_installed_upgrade
+    restart_existing_daemon_if_needed
     exit 0
   fi
   ui_warn "Installed xcore-bridge does not support self-upgrade; reinstalling from release"
@@ -338,6 +386,8 @@ if ! install_bin; then
   exit 1
 fi
 ui_done "Installed binary"
+
+restart_existing_daemon_if_needed
 
 installed_version="$("$target" version)"
 

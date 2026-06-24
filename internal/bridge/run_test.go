@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,8 @@ func TestWaitForReadyRequiresSOCKSHandshake(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	if err := waitForReady(context.Background(), "127.0.0.1", port, 50*time.Millisecond); err == nil {
 		t.Fatal("expected non-SOCKS TCP listener to be rejected")
+	} else if !strings.Contains(err.Error(), "last error") {
+		t.Fatalf("expected readiness error to include last SOCKS failure, got %v", err)
 	}
 }
 

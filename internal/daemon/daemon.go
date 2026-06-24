@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -28,6 +30,7 @@ type RuntimePaths struct {
 	Log       string
 	BridgeLog string
 	Lock      string
+	Agent     string
 }
 
 type Options struct {
@@ -43,7 +46,13 @@ type Status struct {
 	ProfilePath string
 	Policies    []Policy
 	StalePID    bool
+	LaunchAgent bool
 	Error       string
+}
+
+type LaunchAgentInfo struct {
+	Label string
+	Path  string
 }
 
 type Policy struct {
@@ -77,6 +86,12 @@ func startLocked(ctx context.Context, opts Options) (Status, error) {
 		return Status{}, err
 	}
 	status, _ := GetStatus(opts)
+	if status.LaunchAgent {
+		if status.Running && policyReady(ctx, status, opts) {
+			return status, nil
+		}
+		return StartLaunchAgent(ctx, opts)
+	}
 	if status.Running {
 		if policyReady(ctx, status, opts) {
 			return status, nil
@@ -143,6 +158,16 @@ func Stop(opts Options) (Status, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout+time.Second)
 	defer cancel()
 	return withControlLock(ctx, opts, func() (Status, error) {
+		status, _ := GetStatus(opts)
+		if status.LaunchAgent {
+			if _, err := StopLaunchAgent(ctx); err != nil {
+				_ = AppendBridgeLog("stop launch agent failed profile=%q error=%q", opts.ProfilePath, err)
+				return status, err
+			}
+			if !status.Running {
+				return status, nil
+			}
+		}
 		status, err := stopLocked(opts)
 		if err != nil {
 			_ = AppendBridgeLog("stop failed profile=%q pid=%d error=%q", opts.ProfilePath, status.PID, err)
@@ -190,6 +215,20 @@ func stopLocked(opts Options) (Status, error) {
 func Restart(ctx context.Context, opts Options) (Status, error) {
 	_ = AppendBridgeLog("restart requested profile=%q", opts.ProfilePath)
 	return withControlLock(ctx, opts, func() (Status, error) {
+		status, _ := GetStatus(opts)
+		if status.LaunchAgent {
+			if _, err := StopLaunchAgent(ctx); err != nil {
+				_ = AppendBridgeLog("restart launch agent stop failed profile=%q error=%q", opts.ProfilePath, err)
+				return status, err
+			}
+			status, err := StartLaunchAgent(ctx, opts)
+			if err != nil {
+				_ = AppendBridgeLog("restart launch agent start failed profile=%q error=%q", opts.ProfilePath, err)
+				return status, err
+			}
+			_ = AppendBridgeLog("restart launch agent ready profile=%q pid=%d", status.ProfilePath, status.PID)
+			return status, nil
+		}
 		if _, err := stopLocked(opts); err != nil {
 			_ = AppendBridgeLog("restart stop failed profile=%q error=%q", opts.ProfilePath, err)
 			return Status{}, err
@@ -202,6 +241,120 @@ func Restart(ctx context.Context, opts Options) (Status, error) {
 		_ = AppendBridgeLog("restart ready profile=%q pid=%d", status.ProfilePath, status.PID)
 		return status, nil
 	})
+}
+
+func InstallLaunchAgent(ctx context.Context, opts Options) (LaunchAgentInfo, Status, error) {
+	_ = AppendBridgeLog("launch agent install requested profile=%q", opts.ProfilePath)
+	if err := validateProfile(opts.ProfilePath); err != nil {
+		return LaunchAgentInfo{}, Status{}, err
+	}
+	execPath := strings.TrimSpace(opts.ExecPath)
+	if execPath == "" {
+		var err error
+		execPath, err = os.Executable()
+		if err != nil {
+			return LaunchAgentInfo{}, Status{}, err
+		}
+	}
+	existingStatus, _ := GetStatus(opts)
+	info, err := writeLaunchAgent(opts, execPath)
+	if err != nil {
+		_ = AppendBridgeLog("launch agent write failed profile=%q error=%q", opts.ProfilePath, err)
+		return info, Status{}, err
+	}
+	if existingStatus.Running && !existingStatus.LaunchAgent {
+		if _, err := Stop(opts); err != nil {
+			_ = AppendBridgeLog("launch agent stop manual daemon failed profile=%q error=%q", opts.ProfilePath, err)
+			return info, existingStatus, err
+		}
+	}
+	status, err := StartLaunchAgent(ctx, opts)
+	if err != nil {
+		_ = AppendBridgeLog("launch agent start failed profile=%q error=%q", opts.ProfilePath, err)
+		return info, status, err
+	}
+	_ = AppendBridgeLog("launch agent ready profile=%q pid=%d path=%q", status.ProfilePath, status.PID, info.Path)
+	return info, status, nil
+}
+
+func StartLaunchAgent(ctx context.Context, opts Options) (Status, error) {
+	info, err := launchAgentInfo()
+	if err != nil {
+		return Status{}, err
+	}
+	if _, err := os.Stat(info.Path); err != nil {
+		return Status{}, err
+	}
+	if err := runLaunchctl(ctx, "bootstrap", guiDomain(), info.Path); err != nil {
+		_ = runLaunchctl(context.Background(), "bootout", guiDomain(), info.Path)
+		if retryErr := runLaunchctl(ctx, "bootstrap", guiDomain(), info.Path); retryErr != nil {
+			_ = AppendBridgeLog("launch agent bootstrap failed profile=%q error=%q", opts.ProfilePath, retryErr)
+			return Status{}, fmt.Errorf("bootstrap launch agent: %w", retryErr)
+		}
+	}
+	if err := runLaunchctl(ctx, "kickstart", "-k", guiDomain()+"/"+info.Label); err != nil {
+		_ = AppendBridgeLog("launch agent kickstart failed profile=%q error=%q", opts.ProfilePath, err)
+		return Status{}, fmt.Errorf("kickstart launch agent: %w", err)
+	}
+	if strings.TrimSpace(opts.ProfilePath) == "" {
+		status, err := GetStatus(opts)
+		status.LaunchAgent = true
+		return status, err
+	}
+	status, err := waitForLaunchAgentReady(ctx, opts)
+	if err != nil {
+		_ = AppendBridgeLog("launch agent readiness failed profile=%q error=%q", opts.ProfilePath, err)
+		return status, err
+	}
+	status.LaunchAgent = true
+	return status, nil
+}
+
+func StopLaunchAgent(ctx context.Context) (LaunchAgentInfo, error) {
+	info, err := launchAgentInfo()
+	if err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	status, _ := GetStatus(Options{})
+	if _, err := os.Stat(info.Path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return info, nil
+		}
+		return info, err
+	}
+	if err := runLaunchctl(ctx, "bootout", guiDomain(), info.Path); err != nil && !isLaunchctlNoService(err) {
+		return info, fmt.Errorf("bootout launch agent: %w", err)
+	}
+	if status.Running {
+		if err := waitForStopped(ctx, status.PID); err != nil {
+			return info, err
+		}
+	}
+	return info, nil
+}
+
+func UninstallLaunchAgent(ctx context.Context) (LaunchAgentInfo, Status, error) {
+	_ = AppendBridgeLog("launch agent uninstall requested")
+	info, err := launchAgentInfo()
+	if err != nil {
+		return LaunchAgentInfo{}, Status{}, err
+	}
+	status, _ := GetStatus(Options{})
+	if _, err := os.Stat(info.Path); err == nil {
+		if _, err := StopLaunchAgent(ctx); err != nil {
+			_ = AppendBridgeLog("launch agent bootout failed path=%q error=%q", info.Path, err)
+			return info, status, err
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return info, status, err
+	}
+	if err := os.Remove(info.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return info, status, err
+	}
+	status, _ = GetStatus(Options{})
+	status.LaunchAgent = false
+	_ = AppendBridgeLog("launch agent uninstalled path=%q", info.Path)
+	return info, status, nil
 }
 
 func Ensure(ctx context.Context, opts Options) (Status, error) {
@@ -318,6 +471,7 @@ func GetStatus(opts Options) (Status, error) {
 		PID:         pid,
 		ProfilePath: state.ProfilePath,
 		Policies:    state.Policies,
+		LaunchAgent: launchAgentInstalled(),
 	}
 	if status.ProfilePath == "" {
 		status.ProfilePath = opts.ProfilePath
@@ -331,8 +485,11 @@ func GetStatus(opts Options) (Status, error) {
 	running := processRunning(pid)
 	status.Running = running
 	status.StalePID = !running
-	if running && len(status.Policies) > 0 && !ready(context.Background(), status.Policies, 100*time.Millisecond) {
-		status.Error = "daemon process is running but SOCKS5 listeners are not ready"
+	status.LaunchAgent = launchAgentInstalled()
+	if running && len(status.Policies) > 0 {
+		if err := readyError(context.Background(), status.Policies, 100*time.Millisecond); err != nil {
+			status.Error = "daemon process is running but SOCKS5 listeners are not ready: " + err.Error()
+		}
 	}
 	return status, nil
 }
@@ -377,6 +534,7 @@ func Paths() (RuntimePaths, error) {
 		base = os.TempDir()
 	}
 	dir := filepath.Join(base, "xcore-bridge")
+	agent, _ := launchAgentPath()
 	return RuntimePaths{
 		Dir:       dir,
 		PID:       filepath.Join(dir, "daemon.pid"),
@@ -384,7 +542,211 @@ func Paths() (RuntimePaths, error) {
 		Log:       filepath.Join(dir, "daemon.log"),
 		BridgeLog: filepath.Join(dir, "bridge.log"),
 		Lock:      filepath.Join(dir, "daemon.lock"),
+		Agent:     agent,
 	}, nil
+}
+
+func writeLaunchAgent(opts Options, execPath string) (LaunchAgentInfo, error) {
+	if runtime.GOOS != "darwin" {
+		return LaunchAgentInfo{}, fmt.Errorf("launch agents are only supported on macOS")
+	}
+	info, err := launchAgentInfo()
+	if err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	paths, err := Paths()
+	if err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(info.Path), 0o755); err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	logLevel := opts.LogLevel
+	if logLevel == "" {
+		logLevel = defaultLogLevel
+	}
+	args := []string{
+		execPath,
+		"daemon",
+		"serve",
+		"--profile",
+		opts.ProfilePath,
+		"--log-level",
+		logLevel,
+	}
+	data := renderLaunchAgentPlist(info.Label, args, paths.Log)
+	tmp, err := os.CreateTemp(filepath.Dir(info.Path), ".xcore-bridge-launch-agent-*")
+	if err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	tmpName := tmp.Name()
+	keepTemp := false
+	defer func() {
+		if !keepTemp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return LaunchAgentInfo{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	if err := os.Rename(tmpName, info.Path); err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	keepTemp = true
+	return info, nil
+}
+
+func renderLaunchAgentPlist(label string, args []string, logPath string) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	buf.WriteString(`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
+	buf.WriteString(`<plist version="1.0">` + "\n")
+	buf.WriteString("<dict>\n")
+	writePlistString(&buf, "Label", label)
+	buf.WriteString("\t<key>ProgramArguments</key>\n")
+	buf.WriteString("\t<array>\n")
+	for _, arg := range args {
+		buf.WriteString("\t\t<string>")
+		escapePlistString(&buf, arg)
+		buf.WriteString("</string>\n")
+	}
+	buf.WriteString("\t</array>\n")
+	writePlistBool(&buf, "RunAtLoad", true)
+	writePlistBool(&buf, "KeepAlive", true)
+	writePlistString(&buf, "StandardOutPath", logPath)
+	writePlistString(&buf, "StandardErrorPath", logPath)
+	buf.WriteString("</dict>\n")
+	buf.WriteString("</plist>\n")
+	return buf.Bytes()
+}
+
+func writePlistString(buf *bytes.Buffer, key, value string) {
+	buf.WriteString("\t<key>")
+	escapePlistString(buf, key)
+	buf.WriteString("</key>\n\t<string>")
+	escapePlistString(buf, value)
+	buf.WriteString("</string>\n")
+}
+
+func writePlistBool(buf *bytes.Buffer, key string, value bool) {
+	buf.WriteString("\t<key>")
+	escapePlistString(buf, key)
+	if value {
+		buf.WriteString("</key>\n\t<true/>\n")
+		return
+	}
+	buf.WriteString("</key>\n\t<false/>\n")
+}
+
+func escapePlistString(buf *bytes.Buffer, value string) {
+	for _, r := range value {
+		switch r {
+		case '&':
+			buf.WriteString("&amp;")
+		case '<':
+			buf.WriteString("&lt;")
+		case '>':
+			buf.WriteString("&gt;")
+		case '"':
+			buf.WriteString("&quot;")
+		case '\'':
+			buf.WriteString("&apos;")
+		default:
+			buf.WriteRune(r)
+		}
+	}
+}
+
+func waitForLaunchAgentReady(ctx context.Context, opts Options) (Status, error) {
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	var last Status
+	for time.Now().Before(deadline) {
+		current, err := GetStatus(opts)
+		if err == nil && current.Running && current.ProfilePath == opts.ProfilePath && policyReady(ctx, current, opts) {
+			return current, nil
+		}
+		if err != nil {
+			current.Error = err.Error()
+		}
+		last = current
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if last.Error != "" {
+		return last, fmt.Errorf("launch agent daemon did not become ready: %s", last.Error)
+	}
+	return last, fmt.Errorf("launch agent daemon did not become ready within %s", timeout)
+}
+
+func launchAgentInfo() (LaunchAgentInfo, error) {
+	path, err := launchAgentPath()
+	if err != nil {
+		return LaunchAgentInfo{}, err
+	}
+	return LaunchAgentInfo{Label: launchAgentLabel(), Path: path}, nil
+}
+
+func launchAgentLabel() string {
+	return "io.github.backrunner.xcore-bridge.daemon"
+}
+
+func launchAgentPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("user home directory is required for launch agent")
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel()+".plist"), nil
+}
+
+func launchAgentInstalled() bool {
+	path, err := launchAgentPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+func runLaunchctl(ctx context.Context, args ...string) error {
+	command := exec.CommandContext(ctx, "launchctl", args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		prefix := "launchctl " + strings.Join(args, " ")
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		return fmt.Errorf("%s: %w: %s", prefix, err, message)
+	}
+	return nil
+}
+
+func guiDomain() string {
+	return "gui/" + strconv.Itoa(os.Getuid())
+}
+
+func isLaunchctlNoService(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such process") ||
+		strings.Contains(message, "no such service") ||
+		strings.Contains(message, "could not find service")
 }
 
 func withControlLock(ctx context.Context, opts Options, fn func() (Status, error)) (Status, error) {
@@ -449,7 +811,7 @@ func policyReady(ctx context.Context, status Status, opts Options) bool {
 			return false
 		}
 	}
-	return ready(ctx, status.Policies, 100*time.Millisecond)
+	return readyError(ctx, status.Policies, 100*time.Millisecond) == nil
 }
 
 func samePolicies(a, b []Policy) bool {
@@ -465,12 +827,16 @@ func samePolicies(a, b []Policy) bool {
 }
 
 func ready(ctx context.Context, policies []Policy, timeout time.Duration) bool {
+	return readyError(ctx, policies, timeout) == nil
+}
+
+func readyError(ctx context.Context, policies []Policy, timeout time.Duration) error {
 	for _, policy := range policies {
 		if err := bridge.WaitForReady(ctx, policy.LocalHost, policy.LocalPort, timeout); err != nil {
-			return false
+			return fmt.Errorf("%s at %s: %w", policy.Name, net.JoinHostPort(policy.LocalHost, strconv.Itoa(policy.LocalPort)), err)
 		}
 	}
-	return true
+	return nil
 }
 
 func validateProfile(profilePath string) error {
@@ -535,6 +901,22 @@ func removeRuntimeFiles() error {
 	return nil
 }
 
+func waitForStopped(ctx context.Context, pid int) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !processRunning(pid) {
+			_ = removeRuntimeFiles()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("daemon pid %d did not stop after launch agent unload: %w", pid, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func processRunning(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -552,11 +934,17 @@ func processRunning(pid int) bool {
 
 func WaitForPolicy(ctx context.Context, host string, port int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for {
 		if err := bridge.WaitForReady(ctx, host, port, 100*time.Millisecond); err == nil {
 			return nil
+		} else {
+			lastErr = err
 		}
 		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("daemon SOCKS5 listener did not become ready at %s within %s: last error: %w", net.JoinHostPort(host, strconv.Itoa(port)), timeout, lastErr)
+			}
 			return fmt.Errorf("daemon SOCKS5 listener did not become ready at %s within %s", net.JoinHostPort(host, strconv.Itoa(port)), timeout)
 		}
 		select {

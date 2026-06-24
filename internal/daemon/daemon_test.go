@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -99,6 +100,49 @@ func TestControlLockSerializesDaemonOperations(t *testing.T) {
 	}
 	if err := <-errs; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRenderLaunchAgentPlistEscapesArguments(t *testing.T) {
+	data := renderLaunchAgentPlist(
+		"io.github.backrunner.xcore-bridge.daemon",
+		[]string{"/tmp/xcore-bridge", "daemon", "serve", "--profile", "/tmp/A&B <profile>.conf"},
+		"/tmp/xcore-bridge daemon.log",
+	)
+	text := string(data)
+	for _, want := range []string{
+		"<key>KeepAlive</key>",
+		"<true/>",
+		"<string>/tmp/A&amp;B &lt;profile&gt;.conf</string>",
+		"<key>StandardErrorPath</key>",
+		"<string>/tmp/xcore-bridge daemon.log</string>",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in plist:\n%s", want, text)
+		}
+	}
+}
+
+func TestGetStatusReportsInstalledLaunchAgentWithoutPID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	agentPath := filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel()+".plist")
+	if err := os.MkdirAll(filepath.Dir(agentPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentPath, []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := GetStatus(Options{ProfilePath: "/tmp/surge.conf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.LaunchAgent {
+		t.Fatalf("expected launch agent status, got %#v", status)
+	}
+	if status.Running {
+		t.Fatalf("status should not report running without pid: %#v", status)
 	}
 }
 
