@@ -233,10 +233,74 @@ restart_existing_daemon_if_needed() {
   ui_warn "Could not restart the existing daemon automatically; run xcore-bridge daemon start"
 }
 
+resolve_stable_release() {
+  curl -fsSL "$api_base/repos/$repo/releases/latest" 2>/dev/null |
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    head -n 1
+}
+
+resolve_beta_release() {
+  curl -fsSL "$api_base/repos/$repo/releases" 2>/dev/null |
+    tr -d '\n' |
+    sed 's/}[[:space:]]*,[[:space:]]*{/}\
+{/g' |
+    awk '
+      /"prerelease"[[:space:]]*:[[:space:]]*true/ && /"draft"[[:space:]]*:[[:space:]]*false/ {
+        line = $0
+        tag = line
+        sub(/^.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", tag)
+        sub(/".*$/, "", tag)
+        if (first == "") {
+          first = tag
+        }
+        normalized = tag
+        sub(/^v/, "", normalized)
+        split(normalized, parts, "-")
+        split(parts[1], core, ".")
+        if (length(core[1]) == 0 || length(core[2]) == 0 || length(core[3]) == 0) {
+          next
+        }
+        preweight = 1
+        pren = 999999
+        prelabel = "~"
+        if (parts[2] != "") {
+          preweight = 0
+          split(parts[2], pre, ".")
+          prelabel = pre[1]
+          pren = pre[2] + 0
+        }
+        key = sprintf("%09d.%09d.%09d.%d.%s.%09d", core[1] + 0, core[2] + 0, core[3] + 0, preweight, prelabel, pren)
+        if (best == "" || key > bestkey) {
+          best = tag
+          bestkey = key
+        }
+      }
+      END {
+        if (best != "") {
+          print best
+        } else if (first != "") {
+          print first
+        }
+      }
+    '
+}
+
 run_installed_upgrade() {
   if [ -n "$version" ]; then
     "$target" upgrade \
       --version "$version" \
+      --repo "$repo" \
+      --target "$target" \
+      --api-url "$api_base" \
+      --download-url "$download_base"
+  elif [ "$channel" = beta ]; then
+    resolved_beta="$(resolve_beta_release || true)"
+    if [ -z "$resolved_beta" ]; then
+      ui_fail "could not resolve a beta release for $repo"
+      exit 1
+    fi
+    "$target" upgrade \
+      --version "$resolved_beta" \
       --repo "$repo" \
       --target "$target" \
       --api-url "$api_base" \
@@ -264,23 +328,6 @@ if [ -f "$target" ] && [ -x "$target" ]; then
   fi
   ui_warn "Installed xcore-bridge does not support self-upgrade; reinstalling from release"
 fi
-
-resolve_stable_release() {
-  curl -fsSL "$api_base/repos/$repo/releases/latest" 2>/dev/null |
-    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-    head -n 1
-}
-
-resolve_beta_release() {
-  curl -fsSL "$api_base/repos/$repo/releases" 2>/dev/null |
-    tr -d '\n' |
-    sed 's/}[[:space:]]*,[[:space:]]*{/}\
-{/g' |
-    sed -n '/"prerelease"[[:space:]]*:[[:space:]]*true/ {
-      s/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p
-      q
-    }'
-}
 
 resolved_channel="$channel"
 ui_step "Resolving release"

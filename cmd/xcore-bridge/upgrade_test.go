@@ -99,6 +99,39 @@ func TestUpgradeAutoFallsBackToBetaRelease(t *testing.T) {
 	}
 }
 
+func TestUpgradeBetaSelectsHighestSemanticPrerelease(t *testing.T) {
+	withUpgradePlatform(t, "darwin", "arm64")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/backrunner/xcore-bridge/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `[
+			{"tag_name":"v0.1.0-beta.9","prerelease":true,"draft":false},
+			{"tag_name":"v0.1.0-beta.10","prerelease":true,"draft":false},
+			{"tag_name":"v0.1.0-beta.8","prerelease":true,"draft":false}
+		]`)
+	}))
+	defer server.Close()
+
+	result, err := runUpgrade(context.Background(), upgradeOptions{
+		Repo:           defaultUpgradeRepo,
+		Channel:        "beta",
+		APIBase:        server.URL,
+		DownloadBase:   server.URL,
+		TargetPath:     filepath.Join(t.TempDir(), "xcore-bridge"),
+		CurrentVersion: "v0.1.0-beta.8",
+		DryRun:         true,
+		HTTPClient:     server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetVersion != "v0.1.0-beta.10" {
+		t.Fatalf("expected highest beta, got %#v", result)
+	}
+}
+
 func TestUpgradeVersionUsesExactTag(t *testing.T) {
 	withUpgradePlatform(t, "darwin", "arm64")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,6 +155,46 @@ func TestUpgradeVersionUsesExactTag(t *testing.T) {
 	}
 	if result.TargetVersion != "v1.2.3" || result.Channel != "tag" {
 		t.Fatalf("expected exact tag, got %#v", result)
+	}
+}
+
+func TestUpgradeVersionRejectsCurrentOrLowerSemanticVersion(t *testing.T) {
+	for _, target := range []string{"v1.2.3", "v1.2.2", "v1.2.3-beta.1"} {
+		_, err := runUpgrade(context.Background(), upgradeOptions{
+			Repo:           defaultUpgradeRepo,
+			Channel:        "beta",
+			ExactVersion:   target,
+			APIBase:        "http://127.0.0.1",
+			DownloadBase:   "http://127.0.0.1",
+			TargetPath:     filepath.Join(t.TempDir(), "xcore-bridge"),
+			CurrentVersion: "v1.2.3",
+			DryRun:         true,
+		})
+		if err == nil {
+			t.Fatalf("expected %s to be rejected", target)
+		}
+		if !strings.Contains(err.Error(), "must be newer") {
+			t.Fatalf("unexpected error for %s: %v", target, err)
+		}
+	}
+}
+
+func TestUpgradeVersionAllowsNewerSemanticVersion(t *testing.T) {
+	result, err := runUpgrade(context.Background(), upgradeOptions{
+		Repo:           defaultUpgradeRepo,
+		Channel:        "beta",
+		ExactVersion:   "v1.2.4",
+		APIBase:        "http://127.0.0.1",
+		DownloadBase:   "http://127.0.0.1",
+		TargetPath:     filepath.Join(t.TempDir(), "xcore-bridge"),
+		CurrentVersion: "v1.2.3",
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetVersion != "v1.2.4" || result.Channel != "tag" {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }
 

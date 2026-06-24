@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -188,6 +189,11 @@ func runUpgrade(ctx context.Context, opts upgradeOptions) (upgradeResult, error)
 	if err != nil {
 		return upgradeResult{}, err
 	}
+	if opts.ExactVersion != "" {
+		if err := validateExactUpgradeVersion(opts.CurrentVersion, release.TagName); err != nil {
+			return upgradeResult{}, err
+		}
+	}
 	goos, goarch := upgradePlatform()
 	targetOS, targetArch, err := upgradeTargetPlatform(goos, goarch)
 	if err != nil {
@@ -310,12 +316,177 @@ func resolveBetaRelease(ctx context.Context, client *http.Client, apiBase, repo 
 	if err := getUpgradeJSON(ctx, client, apiURL(apiBase, repo, "/releases"), &releases); err != nil {
 		return "", err
 	}
+	first := ""
+	best := ""
 	for _, release := range releases {
 		if release.TagName != "" && release.Prerelease && !release.Draft {
-			return release.TagName, nil
+			if first == "" {
+				first = release.TagName
+			}
+			if _, ok := parseUpgradeVersion(release.TagName); !ok {
+				continue
+			}
+			if best == "" || compareUpgradeTags(release.TagName, best) > 0 {
+				best = release.TagName
+			}
 		}
 	}
+	if best != "" {
+		return best, nil
+	}
+	if first != "" {
+		return first, nil
+	}
 	return "", errors.New("no beta/prerelease release found")
+}
+
+type upgradeVersion struct {
+	major      int
+	minor      int
+	patch      int
+	prerelease []string
+}
+
+func validateExactUpgradeVersion(current, target string) error {
+	if _, ok := parseUpgradeVersion(target); !ok {
+		return fmt.Errorf("upgrade --version requires a semantic version tag, got %q", target)
+	}
+	if _, ok := parseUpgradeVersion(current); !ok {
+		return nil
+	}
+	if compareUpgradeTags(target, current) <= 0 {
+		return fmt.Errorf("upgrade --version %s must be newer than current version %s", target, current)
+	}
+	return nil
+}
+
+func compareUpgradeTags(a, b string) int {
+	av, aok := parseUpgradeVersion(a)
+	bv, bok := parseUpgradeVersion(b)
+	switch {
+	case !aok && !bok:
+		return strings.Compare(a, b)
+	case !aok:
+		return -1
+	case !bok:
+		return 1
+	default:
+		return compareUpgradeVersions(av, bv)
+	}
+}
+
+func parseUpgradeVersion(raw string) (upgradeVersion, bool) {
+	value := strings.TrimSpace(raw)
+	value = strings.TrimPrefix(value, "v")
+	if value == "" || strings.EqualFold(value, "dev") {
+		return upgradeVersion{}, false
+	}
+	if base, _, ok := strings.Cut(value, "+"); ok {
+		value = base
+	}
+	core := value
+	pre := ""
+	if left, right, ok := strings.Cut(value, "-"); ok {
+		core = left
+		pre = right
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return upgradeVersion{}, false
+	}
+	parsed := upgradeVersion{}
+	var err error
+	parsed.major, err = parseVersionNumber(parts[0])
+	if err != nil {
+		return upgradeVersion{}, false
+	}
+	parsed.minor, err = parseVersionNumber(parts[1])
+	if err != nil {
+		return upgradeVersion{}, false
+	}
+	parsed.patch, err = parseVersionNumber(parts[2])
+	if err != nil {
+		return upgradeVersion{}, false
+	}
+	if pre != "" {
+		parsed.prerelease = strings.Split(pre, ".")
+	}
+	return parsed, true
+}
+
+func parseVersionNumber(value string) (int, error) {
+	if value == "" {
+		return 0, errors.New("empty version number")
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("invalid version number %q", value)
+		}
+	}
+	return strconv.Atoi(value)
+}
+
+func compareUpgradeVersions(a, b upgradeVersion) int {
+	for _, pair := range [][2]int{
+		{a.major, b.major},
+		{a.minor, b.minor},
+		{a.patch, b.patch},
+	} {
+		switch {
+		case pair[0] < pair[1]:
+			return -1
+		case pair[0] > pair[1]:
+			return 1
+		}
+	}
+	return comparePrerelease(a.prerelease, b.prerelease)
+}
+
+func comparePrerelease(a, b []string) int {
+	if len(a) == 0 && len(b) == 0 {
+		return 0
+	}
+	if len(a) == 0 {
+		return 1
+	}
+	if len(b) == 0 {
+		return -1
+	}
+	for i := 0; i < len(a) || i < len(b); i++ {
+		switch {
+		case i >= len(a):
+			return -1
+		case i >= len(b):
+			return 1
+		}
+		cmp := comparePrereleaseIdentifier(a[i], b[i])
+		if cmp != 0 {
+			return cmp
+		}
+	}
+	return 0
+}
+
+func comparePrereleaseIdentifier(a, b string) int {
+	an, aerr := parseVersionNumber(a)
+	bn, berr := parseVersionNumber(b)
+	switch {
+	case aerr == nil && berr == nil:
+		switch {
+		case an < bn:
+			return -1
+		case an > bn:
+			return 1
+		default:
+			return 0
+		}
+	case aerr == nil:
+		return -1
+	case berr == nil:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
 }
 
 func upgradeTargetPlatform(goos, goarch string) (string, string, error) {
