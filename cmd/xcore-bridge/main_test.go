@@ -347,6 +347,54 @@ Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 	}
 }
 
+func TestReplaceManagedPolicyAndBackup(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	oldLink := testLink("Old")
+	newLink := testLink("Replacement")
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61080", args = "--link", args = "` + oldLink + `", local-port = 61080, udp-relay = true
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := runWithIO([]string{"replace", "--profile", profile, "Demo", newLink}, &stdout, &bytes.Buffer{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "replaced external proxy policy") || !strings.Contains(stdout.String(), "Demo local-port=61080") {
+		t.Fatalf("unexpected replace output:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "backup: "+profile+".bak") {
+		t.Fatalf("replace output should mention backup:\n%s", stdout.String())
+	}
+	updated, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), newLink) || strings.Contains(string(updated), oldLink) {
+		t.Fatalf("profile was not replaced:\n%s", updated)
+	}
+	for _, want := range []string{"Demo = external", "local-port = 61080", "Manual = ss"} {
+		if !strings.Contains(string(updated), want) {
+			t.Fatalf("updated profile missing %q:\n%s", want, updated)
+		}
+	}
+	backup, err := os.ReadFile(profile + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != initial {
+		t.Fatalf("backup should contain original profile:\n%s", backup)
+	}
+}
+
 func TestVerifyManagedRunTargetRejectsUnmanagedLink(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")

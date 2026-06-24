@@ -23,6 +23,13 @@ type RenameOptions struct {
 	WriteFile bool
 }
 
+type ReplaceOptions struct {
+	Name      string
+	Node      vless.Node
+	ExecPath  string
+	WriteFile bool
+}
+
 type InstallResult struct {
 	Profile     string
 	PolicyNames []string
@@ -40,6 +47,13 @@ type RenameResult struct {
 	Profile    string
 	OldName    string
 	NewName    string
+	BackupPath string
+}
+
+type ReplaceResult struct {
+	Profile    string
+	PolicyName string
+	LocalPort  int
 	BackupPath string
 }
 

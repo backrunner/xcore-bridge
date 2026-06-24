@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/backrunner/xcore-bridge/internal/daemon"
 )
 
 const defaultUpgradeRepo = "backrunner/xcore-bridge"
@@ -28,6 +30,7 @@ var (
 	upgradeExecutable = os.Executable
 	upgradePlatform   = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
 	upgradeInstall    = installUpgradeBinary
+	upgradeStopDaemon = stopDaemonForUpgrade
 )
 
 type upgradeOptions struct {
@@ -226,6 +229,9 @@ func runUpgrade(ctx context.Context, opts upgradeOptions) (upgradeResult, error)
 	}
 	binaryPath, err := extractUpgradeBinary(archivePath, tmpdir)
 	if err != nil {
+		return upgradeResult{}, err
+	}
+	if err := upgradeStopDaemon(opts.Stderr); err != nil {
 		return upgradeResult{}, err
 	}
 	if err := upgradeInstall(binaryPath, opts.TargetPath, opts.Stdin, opts.Stderr); err != nil {
@@ -486,6 +492,20 @@ func installUpgradeBinary(src, target string, stdin io.Reader, stderr io.Writer)
 	command.Stderr = stderr
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("sudo install %s: %w", target, err)
+	}
+	return nil
+}
+
+func stopDaemonForUpgrade(stderr io.Writer) error {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	status, err := daemon.Stop(daemon.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return fmt.Errorf("stop daemon before upgrade: %w", err)
+	}
+	if status.PID != 0 || status.StalePID {
+		newUI(stderr).Info("stopped existing xcore-bridge daemon before upgrade")
 	}
 	return nil
 }

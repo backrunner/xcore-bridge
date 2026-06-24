@@ -66,25 +66,31 @@ func runCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	status, err := daemon.Ensure(ctx, daemon.Options{
-		ProfilePath: profilePath,
-		LogLevel:    *logLevel,
-		Timeout:     5 * time.Second,
+	return runManagedPolicy(ctx, node, profilePath, *localHost, *localPort, *logLevel, stdout)
+}
+
+func runManagedPolicy(ctx context.Context, node vless.Node, profilePath, localHost string, localPort int, logLevel string, stdout io.Writer) error {
+	server, err := bridge.Start(ctx, bridge.Config{
+		Node:      node,
+		LocalHost: localHost,
+		LocalPort: localPort,
+		LogLevel:  logLevel,
 	})
 	if err != nil {
-		_ = daemon.AppendBridgeLog("run daemon ensure failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, err)
+		_ = daemon.AppendBridgeLog("run xray start failed policy=%q profile=%q socks=%s:%d error=%q", node.DisplayName(), profilePath, localHost, localPort, err)
 		return err
 	}
-	if err := daemon.WaitForPolicy(ctx, *localHost, *localPort, 5*time.Second); err != nil {
-		_ = daemon.AppendBridgeLog("run policy readiness failed policy=%q profile=%q socks=%s:%d error=%q", node.DisplayName(), profilePath, *localHost, *localPort, err)
-		return err
-	}
-	_ = daemon.AppendBridgeLog("run ready policy=%q profile=%q socks=%s:%d daemonPid=%d", node.DisplayName(), profilePath, *localHost, *localPort, status.PID)
+	defer func() {
+		if err := server.Close(); err != nil {
+			_ = daemon.AppendBridgeLog("run xray close failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, err)
+		}
+	}()
+	_ = daemon.AppendBridgeLog("run ready policy=%q profile=%q socks=%s:%d pid=%d", node.DisplayName(), profilePath, localHost, localPort, os.Getpid())
 	ui := newUI(stdout)
 	ui.Success("xcore-bridge ready")
 	ui.KeyValue("policy", node.DisplayName())
-	ui.KeyValue("socks5", fmt.Sprintf("%s:%d", *localHost, *localPort))
-	ui.KeyValue("daemon", fmt.Sprintf("pid=%d", status.PID))
+	ui.KeyValue("socks5", fmt.Sprintf("%s:%d", localHost, localPort))
+	ui.KeyValue("pid", fmt.Sprintf("%d", os.Getpid()))
 	<-ctx.Done()
 	_ = daemon.AppendBridgeLog("run stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
 	return nil

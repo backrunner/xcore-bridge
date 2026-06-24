@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,6 +125,9 @@ func TestUpgradeVersionUsesExactTag(t *testing.T) {
 
 func TestUpgradeDownloadsVerifiesAndInstallsBetaRelease(t *testing.T) {
 	withUpgradePlatform(t, "darwin", "arm64")
+	withUpgradeStopDaemon(t, func(io.Writer) error {
+		return nil
+	})
 	dir := t.TempDir()
 	target := filepath.Join(dir, "xcore-bridge")
 	if err := os.WriteFile(target, []byte("old-binary"), 0o700); err != nil {
@@ -178,6 +182,71 @@ func TestUpgradeDownloadsVerifiesAndInstallsBetaRelease(t *testing.T) {
 	}
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("installed binary should be executable, mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestUpgradeStopsDaemonBeforeInstalling(t *testing.T) {
+	withUpgradePlatform(t, "darwin", "arm64")
+	dir := t.TempDir()
+	target := filepath.Join(dir, "xcore-bridge")
+	if err := os.WriteFile(target, []byte("old-binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	assetName := "xcore-bridge_v2.0.0-beta.1_darwin_arm64.tar.gz"
+	newBinary := []byte("new-binary")
+	archive := makeUpgradeArchive(t, "xcore-bridge_v2.0.0-beta.1_darwin_arm64/xcore-bridge", newBinary)
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%x  %s\n", sum, assetName)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/backrunner/xcore-bridge/releases":
+			fmt.Fprint(w, `[{"tag_name":"v2.0.0-beta.1","prerelease":true,"draft":false}]`)
+		case "/backrunner/xcore-bridge/releases/download/v2.0.0-beta.1/" + assetName:
+			w.Write(archive)
+		case "/backrunner/xcore-bridge/releases/download/v2.0.0-beta.1/checksums.txt":
+			fmt.Fprint(w, checksums)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var calls []string
+	withUpgradeStopDaemon(t, func(io.Writer) error {
+		calls = append(calls, "stop")
+		return nil
+	})
+	previousInstall := upgradeInstall
+	upgradeInstall = func(src, dst string, stdin io.Reader, stderr io.Writer) error {
+		calls = append(calls, "install")
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		if string(data) != string(newBinary) {
+			return fmt.Errorf("unexpected binary content %q", data)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		upgradeInstall = previousInstall
+	})
+
+	if _, err := runUpgrade(context.Background(), upgradeOptions{
+		Repo:           defaultUpgradeRepo,
+		Channel:        "beta",
+		APIBase:        server.URL,
+		DownloadBase:   server.URL,
+		TargetPath:     target,
+		CurrentVersion: "v1.0.0",
+		HTTPClient:     server.Client(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(calls, ",") != "stop,install" {
+		t.Fatalf("expected daemon stop before install, got %v", calls)
 	}
 }
 
@@ -255,5 +324,14 @@ func withUpgradePlatform(t *testing.T, goos, goarch string) {
 	upgradePlatform = func() (string, string) { return goos, goarch }
 	t.Cleanup(func() {
 		upgradePlatform = previous
+	})
+}
+
+func withUpgradeStopDaemon(t *testing.T, fn func(io.Writer) error) {
+	t.Helper()
+	previous := upgradeStopDaemon
+	upgradeStopDaemon = fn
+	t.Cleanup(func() {
+		upgradeStopDaemon = previous
 	})
 }

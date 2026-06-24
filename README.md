@@ -2,7 +2,7 @@
 
 Add VLESS links to Surge for Mac as managed External Proxy policies.
 
-`xcore-bridge` is macOS-only. It finds your Surge `.conf` profile, writes managed External Proxy policies, and runs one local daemon with embedded `xray-core` SOCKS5 inbounds. Each active Surge policy starts a lightweight foreground `xcore-bridge run` process, which keeps Surge's External Proxy lifecycle intact while forwarding traffic to the daemon's core.
+`xcore-bridge` is macOS-only. It finds your Surge `.conf` profile, writes managed External Proxy policies, and lets Surge start one foreground `xcore-bridge run` process per active policy. That process embeds `xray-core`, hosts the local SOCKS5 inbound, and stays alive until Surge stops it.
 
 ## Quick Start
 
@@ -74,6 +74,12 @@ Rename a managed policy:
 xcore-bridge rename 'Example' 'Example HK'
 ```
 
+Replace a managed policy's VLESS link while keeping its Surge policy name and local port:
+
+```sh
+xcore-bridge replace 'Example' 'vless://UUID@example.com:443?...#Example'
+```
+
 Check and control the daemon:
 
 ```sh
@@ -83,7 +89,7 @@ xcore-bridge daemon stop
 xcore-bridge daemon restart
 ```
 
-Inspect logs when Surge or the daemon fails to connect:
+Inspect logs when Surge or a managed policy fails to connect:
 
 ```sh
 xcore-bridge log
@@ -92,7 +98,7 @@ xcore-bridge daemon log
 xcore-bridge daemon log --follow
 ```
 
-`xcore-bridge log` shows the bridge/supervisor processes that Surge starts. `xcore-bridge daemon log` shows daemon and xray-core startup output.
+`xcore-bridge log` shows the foreground processes that Surge starts. `xcore-bridge daemon log` shows output from manual daemon commands.
 
 Reload Surge after the profile is updated, then select the new policies in Surge.
 
@@ -103,8 +109,8 @@ Reload Surge after the profile is updated, then select the new policies in Surge
 - Creates one backup beside the profile: `profile.conf.bak`.
 - Keeps generated policies inside its managed block in `[Proxy]`.
 - Uses Surge External Proxy Program so Surge starts and stops a lightweight foreground bridge process.
-- Runs xray-core in the xcore-bridge daemon, exposes local SOCKS5 inbounds, and enables UDP relay.
-- Routes each daemon SOCKS5 inbound directly to its VLESS outbound. xray-core does not add domain/IP split-routing rules.
+- Runs xray-core inside that foreground process, exposes a local SOCKS5 inbound, and enables UDP relay.
+- Routes each managed SOCKS5 inbound directly to its VLESS outbound. xray-core does not add domain/IP split-routing rules.
 - Chooses local ports automatically and avoids TCP/UDP conflicts.
 
 If multiple profiles exist, `xcore-bridge` uses the first discovered profile and prints the exact path before editing. To choose manually:

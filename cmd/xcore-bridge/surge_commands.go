@@ -204,6 +204,71 @@ func renameCommand(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+func replaceCommand(args []string, stdout, stderr io.Writer) error {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	fs := flag.NewFlagSet("replace", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
+	name := fs.String("name", "", "managed policy name to replace")
+	link := fs.String("link", "", "VLESS share link")
+	execPath := fs.String("exec", defaultExecPath(), "path to xcore-bridge executable when replacing legacy lines")
+	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	positional := fs.Args()
+	policyName := strings.TrimSpace(*name)
+	shareLink := strings.TrimSpace(*link)
+	switch {
+	case policyName == "" && shareLink == "" && len(positional) == 2:
+		policyName = strings.TrimSpace(positional[0])
+		shareLink = strings.TrimSpace(positional[1])
+	case policyName != "" && shareLink == "" && len(positional) == 1:
+		shareLink = strings.TrimSpace(positional[0])
+	case policyName == "" && shareLink != "" && len(positional) == 1:
+		policyName = strings.TrimSpace(positional[0])
+	case policyName != "" && shareLink != "" && len(positional) == 0:
+	default:
+		return errors.New("replace requires a managed policy name and one VLESS share link")
+	}
+	if policyName == "" || shareLink == "" {
+		return errors.New("replace requires a managed policy name and one VLESS share link")
+	}
+
+	node, err := vless.Parse(shareLink)
+	if err != nil {
+		return err
+	}
+	profilePath, err := selectedProfilePath(*profile, stderr, "replace")
+	if err != nil {
+		return err
+	}
+	updated, err := surge.Replace(profilePath, surge.ReplaceOptions{
+		Name:      policyName,
+		Node:      node,
+		ExecPath:  *execPath,
+		WriteFile: !*dryRun,
+	})
+	if err != nil {
+		return err
+	}
+	if *dryRun {
+		fmt.Fprint(stdout, updated.Profile)
+		return nil
+	}
+	ui := newUI(stdout)
+	ui.Success("replaced external proxy policy")
+	ui.KeyValue("profile", profilePath)
+	if updated.BackupPath != "" {
+		ui.KeyValue("backup", updated.BackupPath)
+	}
+	ui.Item(updated.PolicyName, fmt.Sprintf("local-port=%d", updated.LocalPort))
+	return nil
+}
+
 type repeatedFlag []string
 
 func (f *repeatedFlag) String() string {

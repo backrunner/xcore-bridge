@@ -168,6 +168,25 @@ func managedPolicy(line string) (ManagedPolicy, bool) {
 	}, true
 }
 
+func proxyLineExecPath(line string) (string, bool) {
+	for _, field := range splitProxyFields(line) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(key), "exec") {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if parsed, err := strconv.Unquote(value); err == nil {
+			value = parsed
+		}
+		value = strings.TrimSpace(value)
+		return value, value != ""
+	}
+	return "", false
+}
+
 func linkArg(args []string) string {
 	for i, arg := range args {
 		if arg == "--link" && i+1 < len(args) {

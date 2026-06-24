@@ -166,6 +166,26 @@ supports_installed_upgrade() {
   "$target" help 2>/dev/null | grep -q '^[[:space:]]*upgrade[[:space:]]'
 }
 
+supports_installed_daemon_stop() {
+  "$target" help 2>/dev/null | grep -q '^[[:space:]]*daemon[[:space:]]'
+}
+
+stop_existing_daemon() {
+  if [ ! -f "$target" ] || [ ! -x "$target" ]; then
+    return 0
+  fi
+  if supports_installed_daemon_stop; then
+    ui_step "Stopping existing daemon"
+    if "$target" daemon stop >/dev/null; then
+      ui_done "Daemon stopped"
+      return 0
+    fi
+    ui_fail "could not stop the existing xcore-bridge daemon; stop it manually and retry"
+    exit 1
+  fi
+  ui_warn "Installed xcore-bridge does not support daemon stop; continuing install"
+}
+
 run_installed_upgrade() {
   if [ -n "$version" ]; then
     "$target" upgrade \
@@ -189,6 +209,7 @@ if [ -f "$target" ] && [ -x "$target" ]; then
   installed_version="$("$target" version 2>/dev/null || printf 'unknown')"
   ui_done "Installed: $installed_version"
   if supports_installed_upgrade; then
+    stop_existing_daemon
     ui_step "Running upgrade"
     run_installed_upgrade
     exit 0
@@ -282,6 +303,8 @@ if [ ! -f "$bin_src" ]; then
   exit 1
 fi
 ui_done "Archive unpacked"
+
+stop_existing_daemon
 
 ui_step "Preparing install directory"
 if [ ! -d "$bindir" ]; then
