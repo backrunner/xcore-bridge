@@ -159,6 +159,7 @@ func TestUpgradeVersionUsesExactTag(t *testing.T) {
 }
 
 func TestUpgradeVersionRejectsCurrentOrLowerSemanticVersion(t *testing.T) {
+	withUpgradePlatform(t, "darwin", "arm64")
 	for _, target := range []string{"v1.2.3", "v1.2.2", "v1.2.3-beta.1"} {
 		_, err := runUpgrade(context.Background(), upgradeOptions{
 			Repo:           defaultUpgradeRepo,
@@ -180,6 +181,7 @@ func TestUpgradeVersionRejectsCurrentOrLowerSemanticVersion(t *testing.T) {
 }
 
 func TestUpgradeVersionAllowsNewerSemanticVersion(t *testing.T) {
+	withUpgradePlatform(t, "darwin", "arm64")
 	result, err := runUpgrade(context.Background(), upgradeOptions{
 		Repo:           defaultUpgradeRepo,
 		Channel:        "beta",
