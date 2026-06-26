@@ -26,8 +26,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Check formatting
+        run: |
+          test -z "$(gofmt -l .)"
+
+      - name: Check shell scripts
+        run: sh -n scripts/*.sh
+
       - name: Run tests
         run: go test ./...
+
+      - name: Build supported release targets
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=darwin GOARCH=amd64 go build -trimpath -o /tmp/xcore-bridge-darwin-amd64 ./cmd/xcore-bridge
+          GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/xcore-bridge-darwin-arm64 ./cmd/xcore-bridge
 
   release:
     name: Release

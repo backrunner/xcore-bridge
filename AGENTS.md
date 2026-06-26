@@ -33,8 +33,7 @@ Linux release binaries and Linux installers are intentionally unsupported becaus
 - Use Go standard library APIs for filesystem, path, and parsing work where possible.
 - Keep tests focused on behavior that protects user profiles: discovery, confirmation, backup, section editing, and port/name conflict handling.
 - Run `gofmt` on changed Go files.
-- Run `go test ./...` before committing.
-- Run `sh -n scripts/*.sh` after shell script changes.
+- Before committing or calling a change CI-ready, run the same checks as CI: `test -z "$(gofmt -l .)"`, `sh -n scripts/*.sh`, `go test ./...`, and darwin release builds for `darwin/amd64` and `darwin/arm64`.
 - Keep README user-focused and prune stale release or platform instructions when behavior changes.
 
 ## Commit Messages
