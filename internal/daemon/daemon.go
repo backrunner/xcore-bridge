@@ -3,6 +3,8 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,8 @@ import (
 )
 
 const defaultLogLevel = "warning"
+
+var startBridgeMulti = bridge.StartMulti
 
 type RuntimePaths struct {
 	Dir       string
@@ -59,6 +63,7 @@ type Policy struct {
 	Name      string
 	LocalHost string
 	LocalPort int
+	LinkHash  string
 }
 
 type stateFile struct {
@@ -121,17 +126,9 @@ func Serve(ctx context.Context, opts Options) error {
 		_ = AppendDaemonLog("serve config failed profile=%q error=%q", opts.ProfilePath, err)
 		return err
 	}
+	cfg.AccessLogPath = paths.Log
+	cfg.ErrorLogPath = paths.Log
 	_ = AppendDaemonLog("serve config loaded profile=%q policies=%d", opts.ProfilePath, len(policies))
-	server, err := bridge.StartMulti(ctx, cfg)
-	if err != nil {
-		_ = AppendDaemonLog("serve xray start failed profile=%q error=%q", opts.ProfilePath, err)
-		return err
-	}
-	defer func() {
-		if err := server.Close(); err != nil {
-			_ = AppendDaemonLog("serve xray close failed error=%q", err)
-		}
-	}()
 	state := stateFile{
 		PID:         os.Getpid(),
 		ProfilePath: opts.ProfilePath,
@@ -142,8 +139,18 @@ func Serve(ctx context.Context, opts Options) error {
 		_ = AppendDaemonLog("serve state write failed profile=%q error=%q", opts.ProfilePath, err)
 		return err
 	}
-	_ = AppendDaemonLog("serve ready profile=%q pid=%d policies=%d", opts.ProfilePath, os.Getpid(), len(policies))
 	defer cleanupState(paths, os.Getpid())
+	server, err := startBridgeMulti(ctx, cfg)
+	if err != nil {
+		_ = AppendDaemonLog("serve xray start failed profile=%q error=%q", opts.ProfilePath, err)
+		return err
+	}
+	defer func() {
+		if err := server.Close(); err != nil {
+			_ = AppendDaemonLog("serve xray close failed error=%q", err)
+		}
+	}()
+	_ = AppendDaemonLog("serve ready profile=%q pid=%d policies=%d", opts.ProfilePath, os.Getpid(), len(policies))
 	<-ctx.Done()
 	_ = AppendDaemonLog("serve stopping profile=%q pid=%d reason=%q", opts.ProfilePath, os.Getpid(), ctx.Err())
 	return nil
@@ -514,6 +521,7 @@ func ConfigFromProfile(profilePath, logLevel string) (bridge.MultiConfig, []Poli
 			Name:      item.Name,
 			LocalHost: host,
 			LocalPort: item.LocalPort,
+			LinkHash:  PolicyLinkHash(item.Link),
 		})
 		bridgePolicies = append(bridgePolicies, bridge.PolicyConfig{
 			Name:      item.Name,
@@ -526,6 +534,15 @@ func ConfigFromProfile(profilePath, logLevel string) (bridge.MultiConfig, []Poli
 		logLevel = defaultLogLevel
 	}
 	return bridge.MultiConfig{Policies: bridgePolicies, LogLevel: logLevel}, policies, nil
+}
+
+func PolicyLinkHash(link string) string {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(link))
+	return hex.EncodeToString(sum[:])
 }
 
 func Paths() (RuntimePaths, error) {

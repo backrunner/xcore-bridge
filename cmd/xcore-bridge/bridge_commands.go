@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -17,6 +18,14 @@ import (
 	"github.com/backrunner/xcore-bridge/internal/daemon"
 	"github.com/backrunner/xcore-bridge/internal/surge"
 	"github.com/backrunner/xcore-bridge/internal/vless"
+)
+
+var (
+	startBridgeServer    = bridge.Start
+	getDaemonStatus      = daemon.GetStatus
+	waitForDaemonPolicy  = daemon.WaitForPolicy
+	bridgeRuntimeLogPath = daemon.BridgeLogPath
+	appendRuntimeLog     = daemon.AppendBridgeLog
 )
 
 func runCommand(args []string, stdout, stderr io.Writer) error {
@@ -70,30 +79,134 @@ func runCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func runManagedPolicy(ctx context.Context, node vless.Node, profilePath, localHost string, localPort int, logLevel string, stdout io.Writer) error {
-	server, err := bridge.Start(ctx, bridge.Config{
-		Node:      node,
-		LocalHost: localHost,
-		LocalPort: localPort,
-		LogLevel:  logLevel,
+	logPath, err := bridgeRuntimeLogPath()
+	if err != nil {
+		_ = appendRuntimeLog("run log path failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, err)
+		logPath = ""
+	} else if err := appendRuntimeLog("run xray logs path=%q policy=%q profile=%q", logPath, node.DisplayName(), profilePath); err != nil {
+		logPath = ""
+	}
+	status, statusErr := getDaemonStatus(daemon.Options{ProfilePath: profilePath})
+	if statusErr != nil {
+		_ = appendRuntimeLog("run daemon status failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, statusErr)
+	} else if status.Running {
+		if _, ok := matchingDaemonPolicy(status, profilePath, localHost, localPort, node.Raw); ok {
+			return runManagedDaemonPolicy(ctx, status, node, profilePath, localHost, localPort, stdout)
+		}
+		if status.ProfilePath == profilePath {
+			return fmt.Errorf("daemon is running for %s but does not expose %s; restart daemon or stop it before Surge starts this policy", profilePath, netJoin(localHost, localPort))
+		}
+		if _, ok := daemonPolicyOnPort(status, localHost, localPort); ok {
+			return fmt.Errorf("daemon is already using %s for %s; stop or restart daemon before Surge starts this policy", netJoin(localHost, localPort), status.ProfilePath)
+		}
+	}
+	server, err := startBridgeServer(ctx, bridge.Config{
+		Node:          node,
+		LocalHost:     localHost,
+		LocalPort:     localPort,
+		LogLevel:      logLevel,
+		AccessLogPath: logPath,
+		ErrorLogPath:  logPath,
 	})
 	if err != nil {
-		_ = daemon.AppendBridgeLog("run xray start failed policy=%q profile=%q socks=%s:%d error=%q", node.DisplayName(), profilePath, localHost, localPort, err)
+		_ = appendRuntimeLog("run xray start failed policy=%q profile=%q socks=%s:%d error=%q", node.DisplayName(), profilePath, localHost, localPort, err)
 		return err
 	}
 	defer func() {
 		if err := server.Close(); err != nil {
-			_ = daemon.AppendBridgeLog("run xray close failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, err)
+			_ = appendRuntimeLog("run xray close failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, err)
 		}
 	}()
-	_ = daemon.AppendBridgeLog("run ready policy=%q profile=%q socks=%s:%d pid=%d", node.DisplayName(), profilePath, localHost, localPort, os.Getpid())
+	_ = appendRuntimeLog("run ready policy=%q profile=%q socks=%s:%d pid=%d", node.DisplayName(), profilePath, localHost, localPort, os.Getpid())
 	ui := newUI(stdout)
 	ui.Success("xcore-bridge ready")
 	ui.KeyValue("policy", node.DisplayName())
 	ui.KeyValue("socks5", fmt.Sprintf("%s:%d", localHost, localPort))
 	ui.KeyValue("pid", fmt.Sprintf("%d", os.Getpid()))
 	<-ctx.Done()
-	_ = daemon.AppendBridgeLog("run stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
+	_ = appendRuntimeLog("run stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
 	return nil
+}
+
+func runManagedDaemonPolicy(ctx context.Context, status daemon.Status, node vless.Node, profilePath, localHost string, localPort int, stdout io.Writer) error {
+	if err := waitForDaemonPolicy(ctx, localHost, localPort, 2*time.Second); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		_ = appendRuntimeLog("run daemon policy not ready policy=%q profile=%q daemon_pid=%d socks=%s:%d error=%q", node.DisplayName(), profilePath, status.PID, localHost, localPort, err)
+		return fmt.Errorf("daemon policy %s is not ready: %w", netJoin(localHost, localPort), err)
+	}
+	_ = appendRuntimeLog("run reusing daemon policy=%q profile=%q daemon_pid=%d socks=%s:%d pid=%d", node.DisplayName(), profilePath, status.PID, localHost, localPort, os.Getpid())
+	ui := newUI(stdout)
+	ui.Success("xcore-bridge ready")
+	ui.KeyValue("policy", node.DisplayName())
+	ui.KeyValue("socks5", fmt.Sprintf("%s:%d", localHost, localPort))
+	ui.KeyValue("pid", fmt.Sprintf("%d", os.Getpid()))
+	ui.KeyValue("mode", "daemon")
+	ui.KeyValue("daemon-pid", fmt.Sprintf("%d", status.PID))
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	failures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			_ = appendRuntimeLog("run daemon proxy stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
+			return nil
+		case <-ticker.C:
+			probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			err := waitForDaemonPolicy(probeCtx, localHost, localPort, 500*time.Millisecond)
+			cancel()
+			if ctx.Err() != nil {
+				_ = appendRuntimeLog("run daemon proxy stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
+				return nil
+			}
+			if err == nil {
+				failures = 0
+				continue
+			}
+			failures++
+			_ = appendRuntimeLog("run daemon policy readiness miss policy=%q profile=%q daemon_pid=%d socks=%s:%d misses=%d error=%q", node.DisplayName(), profilePath, status.PID, localHost, localPort, failures, err)
+			if failures >= 3 {
+				_ = appendRuntimeLog("run daemon policy lost policy=%q profile=%q daemon_pid=%d socks=%s:%d error=%q", node.DisplayName(), profilePath, status.PID, localHost, localPort, err)
+				return fmt.Errorf("daemon policy %s stopped responding: %w", netJoin(localHost, localPort), err)
+			}
+		}
+	}
+}
+
+func matchingDaemonPolicy(status daemon.Status, profilePath, localHost string, localPort int, link string) (daemon.Policy, bool) {
+	if !status.Running || status.ProfilePath != profilePath {
+		return daemon.Policy{}, false
+	}
+	policy, ok := daemonPolicyOnPort(status, localHost, localPort)
+	if !ok || policy.LinkHash == "" || policy.LinkHash != daemon.PolicyLinkHash(link) {
+		return daemon.Policy{}, false
+	}
+	return policy, true
+}
+
+func daemonPolicyOnPort(status daemon.Status, localHost string, localPort int) (daemon.Policy, bool) {
+	if localHost == "" {
+		localHost = "127.0.0.1"
+	}
+	for _, policy := range status.Policies {
+		host := policy.LocalHost
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if host == localHost && policy.LocalPort == localPort {
+			return policy, true
+		}
+	}
+	return daemon.Policy{}, false
+}
+
+func netJoin(host string, port int) string {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 func verifyManagedRunTarget(profilePath, link, host string, port int) error {

@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,36 @@ func TestStartListensAndCloseReleasesPort(t *testing.T) {
 		_ = listener.Close()
 		return true
 	})
+}
+
+func TestStartHandlesConcurrentSOCKSHandshakes(t *testing.T) {
+	port := freeTCPPort(t)
+	server, err := Start(context.Background(), Config{
+		Node:      testNode(t),
+		LocalHost: "127.0.0.1",
+		LocalPort: port,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 24)
+	for i := 0; i < cap(errs); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- WaitForReady(context.Background(), "127.0.0.1", port, time.Second)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent SOCKS5 readiness failed: %v", err)
+		}
+	}
 }
 
 func TestStartFailsWhenLocalPortIsOccupied(t *testing.T) {

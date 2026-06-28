@@ -42,6 +42,37 @@ func TestJSONConfigWithLevelLoadsInXray(t *testing.T) {
 	}
 }
 
+func TestJSONConfigCanWriteXrayLogsToFile(t *testing.T) {
+	node, err := vless.Parse("vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#Example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := JSONConfig(Config{
+		Node:          node,
+		LocalHost:     "127.0.0.1",
+		LocalPort:     61080,
+		AccessLogPath: "/tmp/xcore-bridge-access.log",
+		ErrorLogPath:  "/tmp/xcore-bridge-error.log",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.LoadConfig("json", bytes.NewReader(data)); err != nil {
+		t.Fatalf("xray rejected generated config: %v\n%s", err, data)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	logConfig := doc["log"].(map[string]any)
+	if got := logConfig["access"]; got != "/tmp/xcore-bridge-access.log" {
+		t.Fatalf("unexpected access log path %#v in %s", got, data)
+	}
+	if got := logConfig["error"]; got != "/tmp/xcore-bridge-error.log" {
+		t.Fatalf("unexpected error log path %#v in %s", got, data)
+	}
+}
+
 func TestMultiJSONConfigRoutesEachInboundToMatchingOutbound(t *testing.T) {
 	first, err := vless.Parse("vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#First")
 	if err != nil {

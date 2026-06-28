@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/backrunner/xcore-bridge/internal/bridge"
 )
 
 func TestConfigFromProfileUsesManagedPolicies(t *testing.T) {
@@ -39,20 +42,87 @@ Manual = direct
 	if policies[0].Name != "First" || policies[0].LocalHost != "127.0.0.1" || policies[0].LocalPort != 61080 {
 		t.Fatalf("unexpected first status policy: %#v", policies[0])
 	}
+	if policies[0].LinkHash == "" || policies[0].LinkHash == first {
+		t.Fatalf("expected first policy to store a link hash, got %#v", policies[0])
+	}
 	if cfg.Policies[1].Name != "Second" || cfg.Policies[1].LocalPort != 61081 {
 		t.Fatalf("unexpected second bridge policy: %#v", cfg.Policies[1])
 	}
 }
 
+func TestServeWritesStateBeforeStartingBridge(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	profile := filepath.Join(t.TempDir(), "surge.conf")
+	link := testDaemonLink("Managed")
+	initial := `[Proxy]
+# xcore-bridge managed external proxies begin
+Managed = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61080", args = "--link", args = "` + link + `", local-port = 61080, udp-relay = true
+# xcore-bridge managed external proxies end
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStart := startBridgeMulti
+	started := make(chan struct{})
+	checked := make(chan error, 1)
+	startBridgeMulti = func(context.Context, bridge.MultiConfig) (*bridge.Server, error) {
+		paths, err := Paths()
+		if err != nil {
+			checked <- err
+		} else {
+			state, err := readState(paths)
+			if err != nil {
+				checked <- err
+			} else if len(state.Policies) != 1 || state.Policies[0].LinkHash != PolicyLinkHash(link) {
+				checked <- errors.New("state did not include expected policy before bridge start")
+			} else {
+				checked <- nil
+			}
+		}
+		close(started)
+		return &bridge.Server{}, nil
+	}
+	t.Cleanup(func() { startBridgeMulti = oldStart })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Options{ProfilePath: profile})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("bridge start was not called")
+	}
+	if err := <-checked; err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serve did not stop after context cancellation")
+	}
+}
+
 func TestSamePoliciesDetectsProfileChanges(t *testing.T) {
-	current := []Policy{{Name: "First", LocalHost: "127.0.0.1", LocalPort: 61080}}
-	if !samePolicies(current, []Policy{{Name: "First", LocalHost: "127.0.0.1", LocalPort: 61080}}) {
+	current := []Policy{{Name: "First", LocalHost: "127.0.0.1", LocalPort: 61080, LinkHash: PolicyLinkHash("vless://old")}}
+	if !samePolicies(current, []Policy{{Name: "First", LocalHost: "127.0.0.1", LocalPort: 61080, LinkHash: PolicyLinkHash("vless://old")}}) {
 		t.Fatal("expected matching policies to compare equal")
 	}
-	if samePolicies(current, []Policy{{Name: "First", LocalHost: "127.0.0.1", LocalPort: 61081}}) {
+	if samePolicies(current, []Policy{{Name: "First", LocalHost: "127.0.0.1", LocalPort: 61081, LinkHash: PolicyLinkHash("vless://old")}}) {
 		t.Fatal("expected changed local port to compare different")
 	}
-	if samePolicies(current, append(current, Policy{Name: "Second", LocalHost: "127.0.0.1", LocalPort: 61081})) {
+	if samePolicies(current, []Policy{{Name: "First", LocalHost: "127.0.0.1", LocalPort: 61080, LinkHash: PolicyLinkHash("vless://new")}}) {
+		t.Fatal("expected changed link hash to compare different")
+	}
+	if samePolicies(current, append(current, Policy{Name: "Second", LocalHost: "127.0.0.1", LocalPort: 61081, LinkHash: PolicyLinkHash("vless://second")})) {
 		t.Fatal("expected added policy to compare different")
 	}
 }

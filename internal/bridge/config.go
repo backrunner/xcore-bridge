@@ -11,10 +11,12 @@ import (
 )
 
 type Config struct {
-	Node      vless.Node
-	LocalHost string
-	LocalPort int
-	LogLevel  string
+	Node          vless.Node
+	LocalHost     string
+	LocalPort     int
+	LogLevel      string
+	AccessLogPath string
+	ErrorLogPath  string
 }
 
 type PolicyConfig struct {
@@ -25,8 +27,10 @@ type PolicyConfig struct {
 }
 
 type MultiConfig struct {
-	Policies []PolicyConfig
-	LogLevel string
+	Policies      []PolicyConfig
+	LogLevel      string
+	AccessLogPath string
+	ErrorLogPath  string
 }
 
 func JSONConfig(cfg Config) ([]byte, error) {
@@ -38,7 +42,9 @@ func JSONConfig(cfg Config) ([]byte, error) {
 				LocalPort: cfg.LocalPort,
 			},
 		},
-		LogLevel: cfg.LogLevel,
+		LogLevel:      cfg.LogLevel,
+		AccessLogPath: cfg.AccessLogPath,
+		ErrorLogPath:  cfg.ErrorLogPath,
 	})
 }
 
@@ -74,10 +80,18 @@ func MultiJSONConfig(cfg MultiConfig) ([]byte, error) {
 		rules = append(rules, rule)
 	}
 
+	logConfig := map[string]any{
+		"loglevel": logLevel,
+	}
+	if cfg.AccessLogPath != "" {
+		logConfig["access"] = cfg.AccessLogPath
+	}
+	if cfg.ErrorLogPath != "" {
+		logConfig["error"] = cfg.ErrorLogPath
+	}
+
 	doc := map[string]any{
-		"log": map[string]any{
-			"loglevel": logLevel,
-		},
+		"log":       logConfig,
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		"routing": map[string]any{

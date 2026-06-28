@@ -100,9 +100,11 @@ xcore-bridge daemon log
 xcore-bridge daemon log --follow
 ```
 
-`xcore-bridge log` shows the foreground processes that Surge starts. `xcore-bridge daemon log` shows output from manual daemon commands.
+`xcore-bridge log` shows the foreground processes that Surge starts, including embedded xray-core access/error logs. `xcore-bridge daemon log` shows output from manual daemon commands and the manual daemon's embedded xray-core logs.
 
 `daemon install` registers a user LaunchAgent for the manual daemon, starts it at login, and lets macOS restart it if it exits. This is separate from the default Surge External Proxy mode, where Surge owns each foreground policy process.
+
+When the manual daemon is already running for the same profile, Surge-started `run` processes reuse that daemon's matching SOCKS5 listener instead of starting another embedded xray-core. Stop the daemon to return to the default foreground-per-policy mode.
 
 Reload Surge after the profile is updated, then select the new policies in Surge.
 
