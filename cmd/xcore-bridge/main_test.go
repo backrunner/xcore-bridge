@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,7 +235,7 @@ func TestRemoveNameFlagDeletesManagedPolicy(t *testing.T) {
 	initial := `[Proxy]
 DIRECTISH = direct
 # xcore-bridge managed external proxies begin
-Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+` + testManagedLine(profile, "Demo", 61080) + `
 # xcore-bridge managed external proxies end
 Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 `
@@ -265,7 +266,7 @@ func TestRemoveDeletesManagedPolicyAndBackup(t *testing.T) {
 	initial := `[Proxy]
 DIRECTISH = direct
 # xcore-bridge managed external proxies begin
-Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+` + testManagedLine(profile, "Demo", 61080) + `
 # xcore-bridge managed external proxies end
 Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 `
@@ -312,7 +313,7 @@ func TestRenameManagedPolicyAndBackup(t *testing.T) {
 	initial := `[Proxy]
 DIRECTISH = direct
 # xcore-bridge managed external proxies begin
-Old = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+` + testManagedLine(profile, "Old", 61080) + `
 # xcore-bridge managed external proxies end
 Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 `
@@ -429,6 +430,10 @@ func writeLinksFile(t *testing.T, dir string) string {
 
 func testLink(name string) string {
 	return "VLESS://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#" + name
+}
+
+func testManagedLine(profile, name string, port int) string {
+	return fmt.Sprintf(`%s = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "%s", args = "--local-port", args = "%d", args = "--link", args = "%s", local-port = %d, udp-relay = true`, name, profile, port, testLink(name), port)
 }
 
 func assertInsideManagedBlock(t *testing.T, profile, needle string) {

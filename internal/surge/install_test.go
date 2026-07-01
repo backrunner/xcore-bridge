@@ -12,13 +12,15 @@ import (
 func TestInstallReplacesOnlyManagedProxyBlock(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
+	oldLink := testSurgeNode(t, "Old").Raw
 	initial := `[General]
 loglevel = notify
 
 [Proxy]
 DIRECTISH = direct
-# xcore-bridge managed external proxies
-Old = external, exec = "old", args = "old", local-port = 1
+# xcore-bridge managed external proxies begin
+Old = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61080", args = "--link", args = "` + oldLink + `", local-port = 61080, udp-relay = true
+# xcore-bridge managed external proxies end
 
 [Rule]
 FINAL,DIRECT
@@ -60,7 +62,7 @@ FINAL,DIRECT
 		}
 	}
 	if strings.Contains(updated, "Old = external") {
-		t.Fatalf("old managed line was not removed:\n%s", updated)
+		t.Fatalf("previous managed line was not removed:\n%s", updated)
 	}
 	if _, err := os.Stat(profile + ".bak"); err != nil {
 		t.Fatalf("backup was not written: %v", err)
@@ -72,7 +74,7 @@ func TestInstallSkipsExistingNamesAndPorts(t *testing.T) {
 	profile := filepath.Join(dir, "surge.conf")
 	initial := `[Proxy]
 Demo = direct
-Other = external, exec = "old", args = "run", local-port = 61080  # occupied
+Other = external, exec = "/opt/homebrew/bin/other-proxy", local-port = 61080  # occupied
 
 [Proxy Group]
 Group = select, Demo
@@ -111,10 +113,11 @@ Group = select, Demo
 func TestAddAppendsInsideExistingManagedBlock(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
+	first := testSurgeNode(t, "First").Raw
 	initial := `[Proxy]
 DIRECTISH = direct
 # xcore-bridge managed external proxies begin
-First = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+First = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61080", args = "--link", args = "` + first + `", local-port = 61080, udp-relay = true
 # xcore-bridge managed external proxies end
 Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 `
@@ -144,6 +147,36 @@ Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 	}
 	if got := result.LocalPorts[0]; got != 61081 {
 		t.Fatalf("expected new add to avoid existing managed port, got %d", got)
+	}
+}
+
+func TestAddRejectsNonRunManagedProxyLine(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	initial := `[Proxy]
+DIRECTISH = direct
+# xcore-bridge managed external proxies begin
+Daemon = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "daemon", args = "restart", args = "--profile", args = "/tmp/surge.conf", local-port = 61080
+# xcore-bridge managed external proxies end
+Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Add(profile, InstallOptions{
+		Nodes:     []vless.Node{testSurgeNode(t, "Second")},
+		ExecPath:  "/opt/homebrew/bin/xcore-bridge",
+		BasePort:  61080,
+		WriteFile: false,
+		portAvailable: func(_ string, _ int) bool {
+			return true
+		},
+	})
+	if err == nil {
+		t.Fatal("expected non-run managed proxy line to be rejected")
+	}
+	if !strings.Contains(err.Error(), "current xcore-bridge run policy") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

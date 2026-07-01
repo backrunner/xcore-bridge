@@ -22,12 +22,13 @@ func ManagedPolicies(profilePath string) ([]ManagedPolicy, error) {
 	if !hasManaged {
 		return nil, fmt.Errorf("%s has no xcore-bridge managed proxy block", profilePath)
 	}
+	if err := validateCurrentManagedProxyLines(managed); err != nil {
+		return nil, err
+	}
 	var policies []ManagedPolicy
 	for _, line := range managed {
-		policy, ok := managedPolicy(line)
-		if ok {
-			policies = append(policies, policy)
-		}
+		policy, _ := managedPolicy(line)
+		policies = append(policies, policy)
 	}
 	if len(policies) == 0 {
 		return nil, fmt.Errorf("%s has no xcore-bridge managed policies", profilePath)
@@ -144,6 +145,12 @@ func managedPolicy(line string) (ManagedPolicy, bool) {
 			}
 		}
 	}
+	if !isRunProxyArgs(args) {
+		return ManagedPolicy{}, false
+	}
+	if _, ok := proxyLineExecPath(line); !ok {
+		return ManagedPolicy{}, false
+	}
 	link := linkArg(args)
 	runHost, runPort := runListenArgs(args)
 	if runHost == "" {
@@ -166,6 +173,10 @@ func managedPolicy(line string) (ManagedPolicy, bool) {
 		RunHost:   runHost,
 		RunPort:   runPort,
 	}, true
+}
+
+func isRunProxyArgs(args []string) bool {
+	return len(args) > 0 && args[0] == "run"
 }
 
 func proxyLineExecPath(line string) (string, bool) {

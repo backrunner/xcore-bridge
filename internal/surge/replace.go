@@ -27,6 +27,9 @@ func Replace(profilePath string, opts ReplaceOptions) (ReplaceResult, error) {
 	if !hasManaged {
 		return ReplaceResult{}, fmt.Errorf("%s has no xcore-bridge managed proxy block", profilePath)
 	}
+	if err := validateCurrentManagedProxyLines(managed); err != nil {
+		return ReplaceResult{}, err
+	}
 
 	replaced := false
 	localPort := 0
@@ -43,7 +46,7 @@ func Replace(profilePath string, opts ReplaceOptions) (ReplaceResult, error) {
 		}
 		execPath, ok := proxyLineExecPath(line)
 		if !ok {
-			execPath = opts.ExecPath
+			return ReplaceResult{}, fmt.Errorf("managed policy %q is not a valid xcore-bridge managed policy", name)
 		}
 		updated, err := ProxyLine(ProxyLineOptions{
 			Node:             opts.Node,

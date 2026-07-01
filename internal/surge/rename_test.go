@@ -13,8 +13,8 @@ func TestRenameManagedPolicyPreservesOtherLines(t *testing.T) {
 	initial := `[Proxy]
 Manual = direct
 # xcore-bridge managed external proxies begin
-Old = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
-Keep = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61081
+` + testManagedProxyLine(t, profile, "Old", 61080) + `
+` + testManagedProxyLine(t, profile, "Keep", 61081) + `
 # xcore-bridge managed external proxies end
 `
 	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
@@ -48,7 +48,7 @@ func TestRenameAvoidsExistingPolicyNames(t *testing.T) {
 	initial := `[Proxy]
 Target = direct
 # xcore-bridge managed external proxies begin
-Old = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+` + testManagedProxyLine(t, profile, "Old", 61080) + `
 # xcore-bridge managed external proxies end
 `
 	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
@@ -75,7 +75,7 @@ func TestRenameWritesBackup(t *testing.T) {
 	profile := filepath.Join(dir, "surge.conf")
 	initial := `[Proxy]
 # xcore-bridge managed external proxies begin
-Old = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+` + testManagedProxyLine(t, profile, "Old", 61080) + `
 # xcore-bridge managed external proxies end
 `
 	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {

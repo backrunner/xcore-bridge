@@ -26,7 +26,6 @@ type RenameOptions struct {
 type ReplaceOptions struct {
 	Name      string
 	Node      vless.Node
-	ExecPath  string
 	WriteFile bool
 }
 

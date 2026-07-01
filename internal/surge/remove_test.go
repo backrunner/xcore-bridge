@@ -13,8 +13,8 @@ func TestRemovePreservesOtherManagedPolicies(t *testing.T) {
 	initial := `[Proxy]
 DIRECTISH = direct
 # xcore-bridge managed external proxies begin
-First = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
-Second = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61081
+` + testManagedProxyLine(t, profile, "First", 61080) + `
+` + testManagedProxyLine(t, profile, "Second", 61081) + `
 # xcore-bridge managed external proxies end
 Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 `
@@ -43,7 +43,7 @@ func TestRemoveDropsEmptyManagedBlock(t *testing.T) {
 	initial := `[Proxy]
 DIRECTISH = direct
 # xcore-bridge managed external proxies begin
-Only = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+` + testManagedProxyLine(t, profile, "Only", 61080) + `
 # xcore-bridge managed external proxies end
 Manual = ss, 203.0.113.1, 8388, encrypt-method=aes-128-gcm, password=p
 `

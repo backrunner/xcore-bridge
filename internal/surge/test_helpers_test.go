@@ -1,6 +1,7 @@
 package surge
 
 import (
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -16,6 +17,12 @@ func testSurgeNode(t *testing.T, name string) vless.Node {
 		t.Fatal(err)
 	}
 	return node
+}
+
+func testManagedProxyLine(t *testing.T, profile, name string, port int) string {
+	t.Helper()
+	link := testSurgeNode(t, name).Raw
+	return fmt.Sprintf(`%s = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "%s", args = "--local-port", args = "%d", args = "--link", args = "%s", local-port = %d, udp-relay = true`, name, profile, port, link, port)
 }
 
 func listenOnTestPort(t *testing.T) (net.Listener, int) {

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -134,6 +135,78 @@ func TestWaitForReadyRequiresSOCKSHandshake(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "last error") {
 		t.Fatalf("expected readiness error to include last SOCKS failure, got %v", err)
 	}
+}
+
+func TestWaitForReadyDoesNotSendProbeCommand(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	checked := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			checked <- err
+			return
+		}
+		defer conn.Close()
+		greeting := make([]byte, 3)
+		if _, err := io.ReadFull(conn, greeting); err != nil {
+			checked <- err
+			return
+		}
+		if got := string(greeting); got != string([]byte{0x05, 0x01, 0x00}) {
+			checked <- errUnexpectedGreeting(greeting)
+			return
+		}
+		if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
+			checked <- err
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		extra := []byte{0}
+		n, err := conn.Read(extra)
+		if n > 0 {
+			checked <- errUnexpectedExtraSOCKSCommand(extra[:n])
+			return
+		}
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			checked <- nil
+			return
+		}
+		checked <- nil
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := waitForReady(context.Background(), "127.0.0.1", port, time.Second); err != nil {
+		t.Fatalf("expected no-auth SOCKS5 handshake to be enough for readiness: %v", err)
+	}
+	select {
+	case err := <-checked:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fake SOCKS server did not finish")
+	}
+}
+
+func errUnexpectedGreeting(greeting []byte) error {
+	return &unexpectedBytesError{label: "SOCKS greeting", data: greeting}
+}
+
+func errUnexpectedExtraSOCKSCommand(data []byte) error {
+	return &unexpectedBytesError{label: "extra SOCKS command", data: data}
+}
+
+type unexpectedBytesError struct {
+	label string
+	data  []byte
+}
+
+func (e *unexpectedBytesError) Error() string {
+	return e.label + " " + strconv.Quote(string(e.data))
 }
 
 func freeTCPPort(t *testing.T) int {

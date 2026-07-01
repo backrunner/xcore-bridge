@@ -50,6 +50,23 @@ Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "
 	}
 }
 
+func TestManagedPoliciesRejectsDaemonControlArgs(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	link := testLinkForManagedPolicy("Demo")
+	initial := `[Proxy]
+# xcore-bridge managed external proxies begin
+Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "daemon", args = "restart", args = "--profile", args = "/tmp/surge.conf", args = "--local-port", args = "61080", args = "--link", args = "` + link + `", local-port = 61080, udp-relay = true
+# xcore-bridge managed external proxies end
+`
+	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ManagedPolicies(profile); err == nil {
+		t.Fatal("expected daemon control args to be rejected")
+	}
+}
+
 func testLinkForManagedPolicy(name string) string {
 	return "vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#" + name
 }

@@ -11,12 +11,13 @@ func TestReplaceManagedPolicyLinkPreservesNamePortAndOtherLines(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
 	oldLink := "vless://00000000-0000-0000-0000-000000000000@old.example.com:443?encryption=none#Old"
+	keepLink := testSurgeNode(t, "Keep").Raw
 	newNode := testSurgeNode(t, "Replacement")
 	initial := `[Proxy]
 Manual = direct
 # xcore-bridge managed external proxies begin
 Demo = external, exec = "/custom/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61080", args = "--link", args = "` + oldLink + `", local-port = 61080, udp-relay = true
-Keep = external, exec = "/custom/bin/xcore-bridge", args = "run", local-port = 61081
+Keep = external, exec = "/custom/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61081", args = "--link", args = "` + keepLink + `", local-port = 61081, udp-relay = true
 # xcore-bridge managed external proxies end
 `
 	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {

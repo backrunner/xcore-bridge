@@ -49,6 +49,9 @@ func install(profilePath string, opts InstallOptions, replaceManaged bool) (Inst
 		cleaned, proxyStart, proxyEnd = removeManagedProxyBlock(lines, proxyStart, proxyEnd)
 	} else {
 		existingManaged, _ = managedProxyBlock(lines, proxyStart, proxyEnd)
+		if err := validateCurrentManagedProxyLines(existingManaged); err != nil {
+			return InstallResult{}, err
+		}
 		cleaned, proxyStart, proxyEnd = removeManagedProxyBlock(lines, proxyStart, proxyEnd)
 	}
 	if proxyStart == -1 {
@@ -107,4 +110,17 @@ func install(profilePath string, opts InstallOptions, replaceManaged bool) (Inst
 		}
 	}
 	return InstallResult{Profile: rendered, PolicyNames: names, LocalPorts: ports, BackupPath: backupPath}, nil
+}
+
+func validateCurrentManagedProxyLines(lines []string) error {
+	for _, line := range lines {
+		if _, ok := managedPolicy(line); !ok {
+			name, _ := proxyLineName(line)
+			if name == "" {
+				name = strings.TrimSpace(line)
+			}
+			return fmt.Errorf("managed proxy %q is not a current xcore-bridge run policy", name)
+		}
+	}
+	return nil
 }

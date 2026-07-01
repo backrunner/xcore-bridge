@@ -145,34 +145,9 @@ func runManagedDaemonPolicy(ctx context.Context, status daemon.Status, node vles
 	ui.KeyValue("mode", "daemon")
 	ui.KeyValue("daemon-pid", fmt.Sprintf("%d", status.PID))
 
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	failures := 0
-	for {
-		select {
-		case <-ctx.Done():
-			_ = appendRuntimeLog("run daemon proxy stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
-			return nil
-		case <-ticker.C:
-			probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-			err := waitForDaemonPolicy(probeCtx, localHost, localPort, 500*time.Millisecond)
-			cancel()
-			if ctx.Err() != nil {
-				_ = appendRuntimeLog("run daemon proxy stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
-				return nil
-			}
-			if err == nil {
-				failures = 0
-				continue
-			}
-			failures++
-			_ = appendRuntimeLog("run daemon policy readiness miss policy=%q profile=%q daemon_pid=%d socks=%s:%d misses=%d error=%q", node.DisplayName(), profilePath, status.PID, localHost, localPort, failures, err)
-			if failures >= 3 {
-				_ = appendRuntimeLog("run daemon policy lost policy=%q profile=%q daemon_pid=%d socks=%s:%d error=%q", node.DisplayName(), profilePath, status.PID, localHost, localPort, err)
-				return fmt.Errorf("daemon policy %s stopped responding: %w", netJoin(localHost, localPort), err)
-			}
-		}
-	}
+	<-ctx.Done()
+	_ = appendRuntimeLog("run daemon proxy stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
+	return nil
 }
 
 func matchingDaemonPolicy(status daemon.Status, profilePath, localHost string, localPort int, link string) (daemon.Policy, bool) {

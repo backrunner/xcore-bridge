@@ -6,9 +6,8 @@ import (
 )
 
 const (
-	markerBegin  = "# xcore-bridge managed external proxies begin"
-	markerEnd    = "# xcore-bridge managed external proxies end"
-	legacyMarker = "# xcore-bridge managed external proxies"
+	markerBegin = "# xcore-bridge managed external proxies begin"
+	markerEnd   = "# xcore-bridge managed external proxies end"
 )
 
 func ProfileHasManagedBlock(profilePath string) (bool, error) {
@@ -17,8 +16,7 @@ func ProfileHasManagedBlock(profilePath string) (bool, error) {
 		return false, err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		switch strings.TrimSpace(line) {
-		case markerBegin, legacyMarker:
+		if strings.TrimSpace(line) == markerBegin {
 			return true, nil
 		}
 	}
@@ -90,15 +88,6 @@ func removeManagedProxyBlock(lines []string, proxyStart, proxyEnd int) ([]string
 					i = end
 					continue
 				}
-				i = skipLegacyManagedLines(lines, i, proxyEnd)
-				continue
-			}
-			if trimmed == markerEnd {
-				continue
-			}
-			if trimmed == legacyMarker {
-				i = skipLegacyManagedLines(lines, i, proxyEnd)
-				continue
 			}
 		}
 		out = append(out, lines[i])
@@ -114,12 +103,7 @@ func managedProxyBlock(lines []string, proxyStart, proxyEnd int) ([]string, bool
 			if end := findMarkerEnd(lines, i+1, proxyEnd); end != -1 {
 				return proxyContentLines(lines[i+1 : end]), true
 			}
-			end := skipLegacyManagedLines(lines, i, proxyEnd)
-			return proxyContentLines(lines[i+1 : end+1]), true
-		}
-		if trimmed == legacyMarker {
-			end := skipLegacyManagedLines(lines, i, proxyEnd)
-			return proxyContentLines(lines[i+1 : end+1]), true
+			return nil, false
 		}
 	}
 	return nil, false
@@ -129,22 +113,12 @@ func proxyContentLines(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || trimmed == markerBegin || trimmed == markerEnd || trimmed == legacyMarker {
+		if trimmed == "" || trimmed == markerBegin || trimmed == markerEnd {
 			continue
 		}
 		out = append(out, line)
 	}
 	return out
-}
-
-func managedPolicyLineCount(lines []string) int {
-	count := 0
-	for _, line := range lines {
-		if _, ok := proxyLineName(line); ok {
-			count++
-		}
-	}
-	return count
 }
 
 func renderManagedProxyBlock(lines []string, proxyStart, proxyEnd int, managed []string) string {
@@ -179,28 +153,4 @@ func findMarkerEnd(lines []string, start, end int) int {
 		}
 	}
 	return -1
-}
-
-func skipLegacyManagedLines(lines []string, markerIndex, proxyEnd int) int {
-	i := markerIndex
-	for i+1 < proxyEnd {
-		next := strings.TrimSpace(lines[i+1])
-		if next == "" {
-			return i + 1
-		}
-		if !isLegacyManagedLine(next) {
-			return i
-		}
-		i++
-	}
-	return i
-}
-
-func isLegacyManagedLine(line string) bool {
-	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-		return true
-	}
-	lower := strings.ToLower(line)
-	return strings.Contains(lower, "= external") &&
-		strings.Contains(lower, "local-port")
 }

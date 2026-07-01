@@ -113,6 +113,58 @@ func TestRunManagedPolicyReusesMatchingDaemon(t *testing.T) {
 	}
 }
 
+func TestRunManagedDaemonPolicyDoesNotExitOnLaterProbeMisses(t *testing.T) {
+	const profile = "test-profile.conf"
+	const port = 61080
+	node, err := vless.Parse(testLink("Managed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withRunLogSink(t)
+	oldWait := waitForDaemonPolicy
+	waitCalls := 0
+	waitForDaemonPolicy = func(context.Context, string, int, time.Duration) error {
+		waitCalls++
+		if waitCalls == 1 {
+			return nil
+		}
+		return errors.New("transient probe miss")
+	}
+	t.Cleanup(func() { waitForDaemonPolicy = oldWait })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var stdout bytes.Buffer
+	go func() {
+		done <- runManagedDaemonPolicy(ctx, daemon.Status{
+			Running:     true,
+			PID:         1234,
+			ProfilePath: profile,
+		}, node, profile, "127.0.0.1", port, &stdout)
+	}()
+
+	eventuallyRun(t, time.Second, func() bool {
+		return strings.Contains(stdout.String(), "mode: daemon")
+	})
+	select {
+	case err := <-done:
+		t.Fatalf("run exited before Surge stopped it: %v", err)
+	case <-time.After(1200 * time.Millisecond):
+	}
+	if waitCalls != 1 {
+		t.Fatalf("daemon reuse should only probe readiness before reporting ready, got %d calls", waitCalls)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not stop after context cancellation")
+	}
+}
+
 func TestRunManagedPolicyRefusesStaleSameProfileDaemon(t *testing.T) {
 	const profile = "test-profile.conf"
 	const port = 61080

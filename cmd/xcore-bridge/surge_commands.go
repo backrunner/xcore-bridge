@@ -213,7 +213,6 @@ func replaceCommand(args []string, stdout, stderr io.Writer) error {
 	profile := fs.String("profile", "", "Surge profile path; auto-detected from iCloud when omitted")
 	name := fs.String("name", "", "managed policy name to replace")
 	link := fs.String("link", "", "VLESS share link")
-	execPath := fs.String("exec", defaultExecPath(), "path to xcore-bridge executable when replacing legacy lines")
 	dryRun := fs.Bool("dry-run", false, "print updated profile instead of writing")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -249,7 +248,6 @@ func replaceCommand(args []string, stdout, stderr io.Writer) error {
 	updated, err := surge.Replace(profilePath, surge.ReplaceOptions{
 		Name:      policyName,
 		Node:      node,
-		ExecPath:  *execPath,
 		WriteFile: !*dryRun,
 	})
 	if err != nil {

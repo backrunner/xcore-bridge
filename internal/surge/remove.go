@@ -37,7 +37,7 @@ func Remove(profilePath string, opts RemoveOptions) (RemoveResult, error) {
 	if len(removed) == 0 {
 		return RemoveResult{}, fmt.Errorf("no matching managed policies found")
 	}
-	if managedPolicyLineCount(nextManaged) == 0 {
+	if proxyLineCount(nextManaged) == 0 {
 		nextManaged = nil
 	}
 	cleaned, proxyStart, proxyEnd := removeManagedProxyBlock(lines, proxyStart, proxyEnd)
@@ -53,4 +53,14 @@ func Remove(profilePath string, opts RemoveOptions) (RemoveResult, error) {
 		}
 	}
 	return RemoveResult{Profile: rendered, RemovedNames: removed, BackupPath: backupPath}, nil
+}
+
+func proxyLineCount(lines []string) int {
+	count := 0
+	for _, line := range lines {
+		if _, ok := proxyLineName(line); ok {
+			count++
+		}
+	}
+	return count
 }

@@ -37,7 +37,7 @@ func TestInstallReusesPreviousManagedPortEvenWhenOccupied(t *testing.T) {
 	profile := filepath.Join(dir, "surge.conf")
 	initial := `[Proxy]
 # xcore-bridge managed external proxies begin
-Demo = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", local-port = 61080
+` + testManagedProxyLine(t, profile, "Demo", 61080) + `
 # xcore-bridge managed external proxies end
 `
 	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
@@ -64,7 +64,7 @@ func TestInstallIgnoresCommentedLocalPorts(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")
 	initial := `[Proxy]
-# Example = external, exec = "old", args = "run", local-port = 61080
+# Example = external, exec = "/opt/homebrew/bin/xcore-bridge", args = "run", args = "--profile", args = "` + profile + `", args = "--local-port", args = "61080", args = "--link", args = "` + testSurgeNode(t, "Example").Raw + `", local-port = 61080, udp-relay = true
 DIRECTISH = direct
 `
 	if err := os.WriteFile(profile, []byte(initial), 0o644); err != nil {
