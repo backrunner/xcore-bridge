@@ -484,6 +484,48 @@ func TestUpgradeRejectsUnsupportedChannel(t *testing.T) {
 	}
 }
 
+func TestUpgradeCommandRejectsHomebrewManagedTarget(t *testing.T) {
+	previous := upgradeExecutable
+	upgradeExecutable = func() (string, error) {
+		return "/opt/homebrew/Cellar/xcore-bridge-beta/0.1.0-beta.14/bin/xcore-bridge", nil
+	}
+	t.Cleanup(func() {
+		upgradeExecutable = previous
+	})
+
+	err := run([]string{"upgrade", "--dry-run"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected Homebrew-managed target to fail")
+	}
+	if !strings.Contains(err.Error(), "brew upgrade xcore-bridge-beta") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHomebrewFormulaForUpgradeTarget(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{
+			path: "/opt/homebrew/Cellar/xcore-bridge/1.2.3/bin/xcore-bridge",
+			want: "xcore-bridge",
+		},
+		{
+			path: "/usr/local/Cellar/xcore-bridge-beta/0.1.0-beta.14/bin/xcore-bridge",
+			want: "xcore-bridge-beta",
+		},
+		{
+			path: "/usr/local/bin/xcore-bridge",
+			want: "",
+		},
+	} {
+		if got := homebrewFormulaForUpgradeTarget(tc.path); got != tc.want {
+			t.Fatalf("homebrewFormulaForUpgradeTarget(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
 func makeUpgradeArchive(t *testing.T, name string, content []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer

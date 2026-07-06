@@ -33,6 +33,27 @@ jobs:
       - name: Check shell scripts
         run: sh -n scripts/*.sh
 
+      - name: Check Homebrew formula
+        run: |
+          ruby -c Formula/*.rb
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          {
+            printf '%s  %s\n' \
+              0000000000000000000000000000000000000000000000000000000000000001 \
+              xcore-bridge_v9.8.7-beta.6_darwin_amd64.tar.gz
+            printf '%s  %s\n' \
+              0000000000000000000000000000000000000000000000000000000000000002 \
+              xcore-bridge_v9.8.7-beta.6_darwin_arm64.tar.gz
+          } > "$tmpdir/checksums.txt"
+          sh scripts/update-homebrew-formula.sh \
+            --tag v9.8.7-beta.6 \
+            --checksums "$tmpdir/checksums.txt" \
+            --output "$tmpdir/xcore-bridge-beta.rb"
+          ruby -c "$tmpdir/xcore-bridge-beta.rb"
+          grep -q 'class XcoreBridgeBeta < Formula' "$tmpdir/xcore-bridge-beta.rb"
+          grep -q 'xcore-bridge_v9.8.7-beta.6_darwin_arm64.tar.gz' "$tmpdir/xcore-bridge-beta.rb"
+
       - name: Run tests
         run: go test ./...
 
@@ -97,6 +118,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
       - name: Download archives
         uses: actions/download-artifact@v8
         with:
@@ -144,3 +171,27 @@ jobs:
             --title "$TAG_NAME" \
             --notes-file "$notes_file" \
             $args
+
+      - name: Update Homebrew formula
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          sh scripts/update-homebrew-formula.sh \
+            --tag "$TAG_NAME" \
+            --checksums dist/checksums.txt
+
+      - name: Commit Homebrew formula
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if [ -z "$(git status --porcelain -- Formula)" ]; then
+            echo "Homebrew formula is already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula
+          git commit -m "chore: (release) update Homebrew formula for $TAG_NAME"
+          git push origin HEAD:main

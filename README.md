@@ -14,10 +14,25 @@ curl -fsSL https://raw.githubusercontent.com/backrunner/xcore-bridge/main/script
 
 The installer shows each step inline. If `/usr/local/bin` needs administrator permission, it explains why before macOS asks for your password. Use `--bindir` to install somewhere else. Running the installer again upgrades an existing installation.
 
+Or install the current beta with Homebrew:
+
+```sh
+brew tap backrunner/xcore-bridge https://github.com/backrunner/xcore-bridge
+brew install backrunner/xcore-bridge/xcore-bridge-beta
+```
+
+This repository is the Homebrew tap, so the tap command includes the repository URL. After the first stable release, use `brew install backrunner/xcore-bridge/xcore-bridge` instead of the beta formula.
+
 Upgrade:
 
 ```sh
 xcore-bridge upgrade
+```
+
+For Homebrew installations, use Homebrew to upgrade:
+
+```sh
+brew upgrade backrunner/xcore-bridge/xcore-bridge-beta
 ```
 
 By default, `upgrade` uses the `auto` channel: latest stable first, then the newest prerelease only when no stable release exists. Choose a channel explicitly when needed:
@@ -149,3 +164,13 @@ xcore-bridge add --dry-run 'vless://UUID@example.com:443?...#Example'
 go test ./...
 go build -trimpath -ldflags "-X main.version=dev" ./cmd/xcore-bridge
 ```
+
+## Homebrew Tap
+
+The root `Formula/` directory lets this repository act as a custom Homebrew tap:
+
+```sh
+brew tap backrunner/xcore-bridge https://github.com/backrunner/xcore-bridge
+```
+
+Release tags update the formula with `scripts/update-homebrew-formula.sh` after GitHub Release assets and `checksums.txt` are published. Stable tags update `Formula/xcore-bridge.rb`; prerelease tags update `Formula/xcore-bridge-beta.rb`.

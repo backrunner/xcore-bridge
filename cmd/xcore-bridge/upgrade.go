@@ -132,6 +132,9 @@ func upgradeCommand(args []string, stdout, stderr io.Writer, stdin io.Reader) er
 		}
 		targetPath = executable
 	}
+	if formula := homebrewFormulaForUpgradeTarget(targetPath); formula != "" {
+		return fmt.Errorf("Homebrew manages this xcore-bridge installation; use `brew upgrade %s`", formula)
+	}
 
 	result, err := runUpgrade(context.Background(), upgradeOptions{
 		Repo:           strings.Trim(strings.TrimSpace(*repo), "/"),
@@ -811,4 +814,39 @@ func upgradeEnv(name, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func homebrewFormulaForUpgradeTarget(targetPath string) string {
+	for _, candidate := range homebrewUpgradeTargetCandidates(targetPath) {
+		formula := homebrewFormulaInPath(candidate)
+		if formula != "" {
+			return formula
+		}
+	}
+	return ""
+}
+
+func homebrewUpgradeTargetCandidates(targetPath string) []string {
+	if strings.TrimSpace(targetPath) == "" {
+		return nil
+	}
+	candidates := []string{targetPath}
+	if resolved, err := filepath.EvalSymlinks(targetPath); err == nil && resolved != targetPath {
+		candidates = append(candidates, resolved)
+	}
+	return candidates
+}
+
+func homebrewFormulaInPath(targetPath string) string {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(targetPath)), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] != "Cellar" {
+			continue
+		}
+		switch parts[i+1] {
+		case "xcore-bridge", "xcore-bridge-beta":
+			return parts[i+1]
+		}
+	}
+	return ""
 }
