@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	_ "github.com/xtls/xray-core/main/distro/all"
@@ -16,6 +17,8 @@ import (
 
 type Server struct {
 	coreServer core.Server
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 func Start(ctx context.Context, cfg Config) (_ *Server, err error) {
@@ -34,9 +37,13 @@ func Start(ctx context.Context, cfg Config) (_ *Server, err error) {
 }
 
 func StartMulti(ctx context.Context, cfg MultiConfig) (_ *Server, err error) {
+	var created *Server
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("xray panic during startup: %v", recovered)
+		}
+		if err != nil && created != nil {
+			_ = created.Close()
 		}
 	}()
 	data, err := MultiJSONConfig(cfg)
@@ -47,22 +54,20 @@ func StartMulti(ctx context.Context, cfg MultiConfig) (_ *Server, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("load xray config: %w", err)
 	}
-	server, err := core.New(c)
+	server, err := core.NewWithContext(ctx, c)
 	if err != nil {
 		return nil, fmt.Errorf("create xray server: %w", err)
 	}
+	created = &Server{coreServer: server}
 	if err := server.Start(); err != nil {
-		_ = server.Close()
 		return nil, fmt.Errorf("start xray server: %w", err)
 	}
-	started := &Server{coreServer: server}
 	for _, policy := range cfg.Policies {
 		if err := waitForReady(ctx, policy.LocalHost, policy.LocalPort, 2*time.Second); err != nil {
-			_ = started.Close()
 			return nil, err
 		}
 	}
-	return started, nil
+	return created, nil
 }
 
 func Run(ctx context.Context, cfg Config) error {
@@ -79,7 +84,10 @@ func (s *Server) Close() error {
 	if s == nil || s.coreServer == nil {
 		return nil
 	}
-	return s.coreServer.Close()
+	s.closeOnce.Do(func() {
+		s.closeErr = s.coreServer.Close()
+	})
+	return s.closeErr
 }
 
 func waitForReady(ctx context.Context, host string, port int, timeout time.Duration) error {

@@ -43,6 +43,45 @@ func TestStartListensAndCloseReleasesPort(t *testing.T) {
 	})
 }
 
+func TestServerCloseIsIdempotent(t *testing.T) {
+	port := freeTCPPort(t)
+	server, err := Start(context.Background(), Config{
+		Node:      testNode(t),
+		LocalHost: "127.0.0.1",
+		LocalPort: port,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("second close failed: %v", err)
+	}
+}
+
+func TestCanceledStartReleasesListeners(t *testing.T) {
+	port := freeTCPPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Start(ctx, Config{
+		Node:      testNode(t),
+		LocalHost: "127.0.0.1",
+		LocalPort: port,
+	}); err == nil {
+		t.Fatal("expected canceled startup to fail")
+	}
+	eventually(t, time.Second, func() bool {
+		listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			return false
+		}
+		_ = listener.Close()
+		return true
+	})
+}
+
 func TestStartHandlesConcurrentSOCKSHandshakes(t *testing.T) {
 	port := freeTCPPort(t)
 	server, err := Start(context.Background(), Config{
@@ -70,6 +109,41 @@ func TestStartHandlesConcurrentSOCKSHandshakes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("concurrent SOCKS5 readiness failed: %v", err)
 		}
+	}
+}
+
+func TestStartSupportsSOCKS5UDPAssociate(t *testing.T) {
+	port := freeTCPPort(t)
+	server, err := Start(context.Background(), Config{
+		Node:      testNode(t),
+		LocalHost: "127.0.0.1",
+		LocalPort: port,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := checkSOCKS5Ready(conn, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte{0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 4)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply[0] != 0x05 || reply[1] != 0x00 {
+		t.Fatalf("unexpected SOCKS5 UDP ASSOCIATE response %x", reply)
 	}
 }
 

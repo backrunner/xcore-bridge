@@ -32,6 +32,40 @@ func TestInstallSkipsLocallyOccupiedPorts(t *testing.T) {
 	}
 }
 
+func TestInstallAllocatesDistinctPortsForSeveralChildren(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "surge.conf")
+	if err := os.WriteFile(profile, []byte("[Proxy]\nDIRECTISH = direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Install(profile, InstallOptions{
+		Nodes: []vless.Node{
+			testSurgeNode(t, "First"),
+			testSurgeNode(t, "Second"),
+			testSurgeNode(t, "Third"),
+		},
+		ExecPath:  "/opt/homebrew/bin/xcore-bridge",
+		BasePort:  61080,
+		WriteFile: false,
+		portAvailable: func(_ string, _ int) bool {
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{61080, 61081, 61082}
+	if len(result.LocalPorts) != len(want) {
+		t.Fatalf("unexpected allocated ports %#v", result.LocalPorts)
+	}
+	for i, port := range result.LocalPorts {
+		if port != want[i] {
+			t.Fatalf("child %d got port %d, want %d", i, port, want[i])
+		}
+	}
+}
+
 func TestInstallReusesPreviousManagedPortEvenWhenOccupied(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "surge.conf")

@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestRunManagedPolicyOwnsListenerLifecycle(t *testing.T) {
 	port := freeRunTCPPort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	var stdout bytes.Buffer
+	var stdout synchronizedBuffer
 
 	go func() {
 		done <- runManagedPolicy(ctx, node, "test-profile.conf", "127.0.0.1", port, "warning", &stdout)
@@ -91,7 +92,7 @@ func TestRunManagedPolicyReusesMatchingDaemon(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	var stdout bytes.Buffer
+	var stdout synchronizedBuffer
 	go func() {
 		done <- runManagedPolicy(ctx, node, profile, "127.0.0.1", port, "warning", &stdout)
 	}()
@@ -134,7 +135,7 @@ func TestRunManagedDaemonPolicyDoesNotExitOnLaterProbeMisses(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	var stdout bytes.Buffer
+	var stdout synchronizedBuffer
 	go func() {
 		done <- runManagedDaemonPolicy(ctx, daemon.Status{
 			Running:     true,
@@ -247,6 +248,23 @@ func eventuallyRun(t *testing.T, timeout time.Duration, condition func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition was not met before timeout")
+}
+
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func withRunDaemonStatus(t *testing.T, status daemon.Status) {

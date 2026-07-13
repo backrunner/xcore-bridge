@@ -10,6 +10,11 @@ import (
 	"github.com/backrunner/xcore-bridge/internal/vless"
 )
 
+const (
+	connectionIdleSeconds   = 3600
+	halfCloseTimeoutSeconds = 10
+)
+
 type Config struct {
 	Node          vless.Node
 	LocalHost     string
@@ -60,9 +65,10 @@ func MultiJSONConfig(cfg MultiConfig) ([]byte, error) {
 	inbounds := make([]any, 0, len(cfg.Policies))
 	outbounds := make([]any, 0, len(cfg.Policies))
 	rules := make([]any, 0, len(cfg.Policies))
+	policyLevels := map[string]any{}
 	seenPorts := map[string]bool{}
 	for i, policy := range cfg.Policies {
-		inbound, outbound, rule, err := policyConfigParts(policy, i)
+		inbound, outbound, rule, level, err := policyConfigParts(policy, i)
 		if err != nil {
 			return nil, err
 		}
@@ -78,6 +84,11 @@ func MultiJSONConfig(cfg MultiConfig) ([]byte, error) {
 		inbounds = append(inbounds, inbound)
 		outbounds = append(outbounds, outbound)
 		rules = append(rules, rule)
+		policyLevels[strconv.FormatUint(uint64(level), 10)] = map[string]any{
+			"connIdle":     connectionIdleSeconds,
+			"uplinkOnly":   halfCloseTimeoutSeconds,
+			"downlinkOnly": halfCloseTimeoutSeconds,
+		}
 	}
 
 	logConfig := map[string]any{
@@ -94,6 +105,9 @@ func MultiJSONConfig(cfg MultiConfig) ([]byte, error) {
 		"log":       logConfig,
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
+		"policy": map[string]any{
+			"levels": policyLevels,
+		},
 		"routing": map[string]any{
 			"domainStrategy": "AsIs",
 			"rules":          rules,
@@ -109,19 +123,23 @@ func MultiJSONConfig(cfg MultiConfig) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
-func policyConfigParts(cfg PolicyConfig, index int) (map[string]any, map[string]any, map[string]any, error) {
+func policyConfigParts(cfg PolicyConfig, index int) (map[string]any, map[string]any, map[string]any, uint32, error) {
 	if err := cfg.Node.Validate(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
 	}
 	if cfg.LocalHost == "" {
 		cfg.LocalHost = "127.0.0.1"
 	}
 	if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
-		return nil, nil, nil, fmt.Errorf("invalid local port %d", cfg.LocalPort)
+		return nil, nil, nil, 0, fmt.Errorf("invalid local port %d", cfg.LocalPort)
 	}
-	outboundSettings, err := vlessSettings(cfg.Node)
+	outboundSettings, level, err := vlessSettings(cfg.Node)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
+	}
+	stream, err := streamSettings(cfg.Node)
+	if err != nil {
+		return nil, nil, nil, 0, err
 	}
 	inboundTag := taggedName("surge-in", cfg.LocalPort, index)
 	outboundTag := taggedName("vless-out", cfg.LocalPort, index)
@@ -140,21 +158,21 @@ func policyConfigParts(cfg PolicyConfig, index int) (map[string]any, map[string]
 		"tag":            outboundTag,
 		"protocol":       "vless",
 		"settings":       outboundSettings,
-		"streamSettings": streamSettings(cfg.Node),
+		"streamSettings": stream,
 	}
 	rule := map[string]any{
 		"type":        "field",
 		"inboundTag":  []string{inboundTag},
 		"outboundTag": outboundTag,
 	}
-	return inbound, outbound, rule, nil
+	return inbound, outbound, rule, level, nil
 }
 
 func taggedName(prefix string, port, index int) string {
 	return prefix + "-" + strconv.Itoa(port) + "-" + strconv.Itoa(index+1)
 }
 
-func vlessSettings(node vless.Node) (map[string]any, error) {
+func vlessSettings(node vless.Node) (map[string]any, uint32, error) {
 	user := map[string]any{
 		"id":         node.ID,
 		"encryption": strings.ToLower(valueOrDefault(node.Param("encryption"), "none")),
@@ -162,12 +180,14 @@ func vlessSettings(node vless.Node) (map[string]any, error) {
 	if flow := node.Flow(); flow != "" {
 		user["flow"] = flow
 	}
+	var userLevel uint32
 	if level := node.Param("level"); level != "" {
 		parsedLevel, err := strconv.ParseUint(level, 10, 32)
 		if err != nil {
-			return nil, fmt.Errorf("invalid VLESS user level %q", level)
+			return nil, 0, fmt.Errorf("invalid VLESS user level %q", level)
 		}
-		user["level"] = uint32(parsedLevel)
+		userLevel = uint32(parsedLevel)
+		user["level"] = userLevel
 	}
 	return map[string]any{
 		"vnext": []any{
@@ -177,10 +197,10 @@ func vlessSettings(node vless.Node) (map[string]any, error) {
 				"users":   []any{user},
 			},
 		},
-	}, nil
+	}, userLevel, nil
 }
 
-func streamSettings(node vless.Node) map[string]any {
+func streamSettings(node vless.Node) (map[string]any, error) {
 	network := node.Network()
 	security := node.Security()
 	settings := map[string]any{
@@ -203,15 +223,23 @@ func streamSettings(node vless.Node) map[string]any {
 			}
 		}
 	case "ws":
-		settings["wsSettings"] = websocketSettings(node)
+		ws, err := websocketSettings(node)
+		if err != nil {
+			return nil, err
+		}
+		settings["wsSettings"] = ws
 	case "httpupgrade":
 		settings["httpupgradeSettings"] = httpUpgradeSettings(node)
 	case "splithttp":
-		settings["splithttpSettings"] = splitHTTPSettings(node)
+		splitHTTP, err := splitHTTPSettings(node)
+		if err != nil {
+			return nil, err
+		}
+		settings["splithttpSettings"] = splitHTTP
 	case "grpc":
 		settings["grpcSettings"] = grpcSettings(node)
 	}
-	return settings
+	return settings, nil
 }
 
 func realitySettings(node vless.Node) map[string]any {
@@ -235,11 +263,18 @@ func tlsSettings(node vless.Node) map[string]any {
 	return out
 }
 
-func websocketSettings(node vless.Node) map[string]any {
+func websocketSettings(node vless.Node) (map[string]any, error) {
 	out := map[string]any{}
 	copyParam(out, "host", node, "host")
 	copyParam(out, "path", node, "path")
-	return out
+	if value := node.Param("heartbeatPeriod"); value != "" {
+		period, err := strconv.ParseUint(value, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WebSocket heartbeat period %q", value)
+		}
+		out["heartbeatPeriod"] = uint32(period)
+	}
+	return out, nil
 }
 
 func httpUpgradeSettings(node vless.Node) map[string]any {
@@ -249,12 +284,19 @@ func httpUpgradeSettings(node vless.Node) map[string]any {
 	return out
 }
 
-func splitHTTPSettings(node vless.Node) map[string]any {
+func splitHTTPSettings(node vless.Node) (map[string]any, error) {
 	out := map[string]any{}
 	copyParam(out, "host", node, "host")
 	copyParam(out, "path", node, "path")
 	copyParam(out, "mode", node, "mode")
-	return out
+	if value := node.Param("extra"); value != "" {
+		var extra map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(value), &extra); err != nil || extra == nil {
+			return nil, fmt.Errorf("invalid SplitHTTP extra settings")
+		}
+		out["extra"] = json.RawMessage(value)
+	}
+	return out, nil
 }
 
 func grpcSettings(node vless.Node) map[string]any {

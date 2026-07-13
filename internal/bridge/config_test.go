@@ -42,6 +42,32 @@ func TestJSONConfigWithLevelLoadsInXray(t *testing.T) {
 	}
 }
 
+func TestJSONConfigSetsLongLivedPolicyForVLESSUserLevel(t *testing.T) {
+	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=tcp&level=7#Example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := JSONConfig(Config{Node: node, LocalHost: "127.0.0.1", LocalPort: 61080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	levels := doc["policy"].(map[string]any)["levels"].(map[string]any)
+	level := levels["7"].(map[string]any)
+	for key, want := range map[string]float64{
+		"connIdle":     connectionIdleSeconds,
+		"uplinkOnly":   halfCloseTimeoutSeconds,
+		"downlinkOnly": halfCloseTimeoutSeconds,
+	} {
+		if got := level[key]; got != want {
+			t.Fatalf("unexpected level 7 %s value %#v in %s", key, got, data)
+		}
+	}
+}
+
 func TestJSONConfigCanWriteXrayLogsToFile(t *testing.T) {
 	node, err := vless.Parse("vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123&type=tcp#Example")
 	if err != nil {
@@ -181,6 +207,39 @@ func TestJSONConfigWebSocketHostUsesTopLevelHost(t *testing.T) {
 	}
 }
 
+func TestJSONConfigPreservesWebSocketHeartbeat(t *testing.T) {
+	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=ws&host=cdn.example.com&path=%2Fws&heartbeatPeriod=30#WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := JSONConfig(Config{Node: node, LocalHost: "127.0.0.1", LocalPort: 61080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.LoadConfig("json", bytes.NewReader(data)); err != nil {
+		t.Fatalf("xray rejected generated config: %v\n%s", err, data)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	streamSettings := doc["outbounds"].([]any)[0].(map[string]any)["streamSettings"].(map[string]any)
+	wsSettings := streamSettings["wsSettings"].(map[string]any)
+	if got := wsSettings["heartbeatPeriod"]; got != float64(30) {
+		t.Fatalf("unexpected WebSocket heartbeat %#v in %s", got, data)
+	}
+}
+
+func TestJSONConfigRejectsInvalidWebSocketHeartbeat(t *testing.T) {
+	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=ws&path=%2Fws&heartbeatPeriod=fast#WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := JSONConfig(Config{Node: node, LocalHost: "127.0.0.1", LocalPort: 61080}); err == nil {
+		t.Fatal("expected invalid WebSocket heartbeat to be rejected")
+	}
+}
+
 func TestJSONConfigSplitHTTPHostUsesTopLevelHost(t *testing.T) {
 	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=splithttp&host=cdn.example.com&path=%2Fxhttp&mode=stream-up#SplitHTTP")
 	if err != nil {
@@ -202,5 +261,38 @@ func TestJSONConfigSplitHTTPHostUsesTopLevelHost(t *testing.T) {
 	}
 	if _, ok := splitHTTPSettings["headers"]; ok {
 		t.Fatalf("splitHTTP settings should not emit Host header:\n%s", data)
+	}
+}
+
+func TestJSONConfigPreservesStructuredSplitHTTPExtra(t *testing.T) {
+	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=xhttp&host=cdn.example.com&path=%2Fxhttp&mode=stream-up&extra=%7B%22noGRPCHeader%22%3Atrue%7D#SplitHTTP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := JSONConfig(Config{Node: node, LocalHost: "127.0.0.1", LocalPort: 61080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.LoadConfig("json", bytes.NewReader(data)); err != nil {
+		t.Fatalf("xray rejected generated config: %v\n%s", err, data)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	streamSettings := doc["outbounds"].([]any)[0].(map[string]any)["streamSettings"].(map[string]any)
+	extra := streamSettings["splithttpSettings"].(map[string]any)["extra"].(map[string]any)
+	if got := extra["noGRPCHeader"]; got != true {
+		t.Fatalf("unexpected SplitHTTP extra %#v in %s", extra, data)
+	}
+}
+
+func TestJSONConfigRejectsInvalidSplitHTTPExtra(t *testing.T) {
+	node, err := vless.Parse("vless://00000000000000000000000000000000@example.com:443?encryption=none&security=tls&sni=www.example.com&type=xhttp&path=%2Fxhttp&extra=%7B#SplitHTTP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := JSONConfig(Config{Node: node, LocalHost: "127.0.0.1", LocalPort: 61080}); err == nil {
+		t.Fatal("expected invalid SplitHTTP extra to be rejected")
 	}
 }

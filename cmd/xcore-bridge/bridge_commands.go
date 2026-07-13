@@ -100,32 +100,7 @@ func runManagedPolicy(ctx context.Context, node vless.Node, profilePath, localHo
 			return fmt.Errorf("daemon is already using %s for %s; stop or restart daemon before Surge starts this policy", netJoin(localHost, localPort), status.ProfilePath)
 		}
 	}
-	server, err := startBridgeServer(ctx, bridge.Config{
-		Node:          node,
-		LocalHost:     localHost,
-		LocalPort:     localPort,
-		LogLevel:      logLevel,
-		AccessLogPath: logPath,
-		ErrorLogPath:  logPath,
-	})
-	if err != nil {
-		_ = appendRuntimeLog("run xray start failed policy=%q profile=%q socks=%s:%d error=%q", node.DisplayName(), profilePath, localHost, localPort, err)
-		return err
-	}
-	defer func() {
-		if err := server.Close(); err != nil {
-			_ = appendRuntimeLog("run xray close failed policy=%q profile=%q error=%q", node.DisplayName(), profilePath, err)
-		}
-	}()
-	_ = appendRuntimeLog("run ready policy=%q profile=%q socks=%s:%d pid=%d", node.DisplayName(), profilePath, localHost, localPort, os.Getpid())
-	ui := newUI(stdout)
-	ui.Success("xcore-bridge ready")
-	ui.KeyValue("policy", node.DisplayName())
-	ui.KeyValue("socks5", fmt.Sprintf("%s:%d", localHost, localPort))
-	ui.KeyValue("pid", fmt.Sprintf("%d", os.Getpid()))
-	<-ctx.Done()
-	_ = appendRuntimeLog("run stopping policy=%q profile=%q reason=%q", node.DisplayName(), profilePath, ctx.Err())
-	return nil
+	return runForegroundManagedPolicy(ctx, node, profilePath, localHost, localPort, logLevel, logPath, stdout)
 }
 
 func runManagedDaemonPolicy(ctx context.Context, status daemon.Status, node vless.Node, profilePath, localHost string, localPort int, stdout io.Writer) error {

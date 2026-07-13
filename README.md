@@ -131,7 +131,9 @@ Reload Surge after the profile is updated, then select the new policies in Surge
 - Keeps generated policies inside its managed block in `[Proxy]`.
 - Uses Surge External Proxy Program so Surge starts and stops a lightweight foreground bridge process.
 - Runs xray-core inside that foreground process, exposes a local SOCKS5 inbound, and enables UDP relay.
+- Serializes overlapping Surge launches for the same policy and port; one child owns xray-core while later children wait as standbys and take over after the owner exits.
 - Routes each managed SOCKS5 inbound directly to its VLESS outbound. xray-core does not add domain/IP split-routing rules.
+- Keeps inactive sessions available for up to one hour, allows graceful TCP half-close completion, and preserves VLESS WebSocket heartbeat and XHTTP `extra` transport settings.
 - Chooses local ports automatically and avoids TCP/UDP conflicts.
 
 If multiple profiles exist, `xcore-bridge` uses the first discovered profile and prints the exact path before editing. To choose manually:
