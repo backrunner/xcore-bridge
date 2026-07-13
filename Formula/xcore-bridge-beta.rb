@@ -3,11 +3,11 @@ class XcoreBridgeBeta < Formula
   homepage "https://github.com/backrunner/xcore-bridge"
 
   if OS.mac? && (Hardware::CPU.arm? || Hardware::CPU.in_rosetta2?)
-    url "https://github.com/backrunner/xcore-bridge/releases/download/v0.1.0-beta.14/xcore-bridge_v0.1.0-beta.14_darwin_arm64.tar.gz"
-    sha256 "ce3f3198af435c2bf460a1097154cd41c610e5a408dff97bedc50e3fa826b1d9"
+    url "https://github.com/backrunner/xcore-bridge/releases/download/v0.1.0-beta.15/xcore-bridge_v0.1.0-beta.15_darwin_arm64.tar.gz"
+    sha256 "bd51a38bb708f1e61c42bdcd7535fa4366ad5e05de38ba96cde4ff1efb58254c"
   else
-    url "https://github.com/backrunner/xcore-bridge/releases/download/v0.1.0-beta.14/xcore-bridge_v0.1.0-beta.14_darwin_amd64.tar.gz"
-    sha256 "e79e5ad02de07ae2d69955b0b771217dbf66d1b6a39126e53f4adcb8ea1a6e55"
+    url "https://github.com/backrunner/xcore-bridge/releases/download/v0.1.0-beta.15/xcore-bridge_v0.1.0-beta.15_darwin_amd64.tar.gz"
+    sha256 "8bce2828ce7600eab03f43cdefb6384b3900a2a5a554a1b75b6a4cb820b2d99e"
   end
 
   license "MIT"
